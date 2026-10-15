@@ -33,6 +33,19 @@ class MissingApiKeyError(RuntimeError):
     """Raised when no Gemini API key is configured (message is Turkish, UI-safe)."""
 
 
+_PLACEHOLDER = "your-key-here"
+
+
+def _clean(value):
+    """Return the stripped value, or None if it is empty or the example placeholder."""
+    if value is None:
+        return None
+    value = str(value).strip()
+    if not value or value == _PLACEHOLDER:
+        return None
+    return value
+
+
 def _from_secrets(name):
     """Read a value from st.secrets; Streamlit raises when no secrets file exists."""
     try:
@@ -41,18 +54,18 @@ def _from_secrets(name):
         value = st.secrets[name]
     except Exception:
         return None
-    return str(value) if value else None
+    return _clean(value)
 
 
 def get_gemini_api_key() -> str:
     """Return the Gemini API key (env var first, then st.secrets). Never log it."""
-    key = os.environ.get("GEMINI_API_KEY") or _from_secrets("GEMINI_API_KEY")
+    key = _clean(os.environ.get("GEMINI_API_KEY")) or _from_secrets("GEMINI_API_KEY")
     if not key:
         raise MissingApiKeyError(_MISSING_KEY_MSG)
     return key
 
 
 def get_yolo_url():
-    """Return the YOLO service base URL, or None when unset (YOLO is optional)."""
-    url = os.environ.get("YOLO_URL") or _from_secrets("YOLO_URL")
+    """Return the YOLO service base URL, or None when unset/invalid (YOLO is optional)."""
+    url = _clean(os.environ.get("YOLO_URL")) or _from_secrets("YOLO_URL")
     return url.rstrip("/") if url else None

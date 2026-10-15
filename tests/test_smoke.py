@@ -28,34 +28,58 @@ def test_config_constants():
     assert config.MAP_ZOOM == 12
 
 
-def test_missing_key_raises_friendly_error(monkeypatch):
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    # make st.secrets unavailable: any access raises, as on a machine with no secrets file
+class _Secrets(dict):
+    """Stand-in for st.secrets; an empty instance behaves like a missing secrets file."""
+
+    def __getitem__(self, name):
+        if name not in self:
+            raise KeyError(name)
+        return dict.__getitem__(self, name)
+
+
+@pytest.fixture
+def secrets(monkeypatch):
+    """Isolate st.secrets and clear env vars so local files never affect tests."""
     import streamlit as st
 
-    class NoSecrets:
-        def __getitem__(self, name):
-            raise FileNotFoundError("no secrets file")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("YOLO_URL", raising=False)
+    fake = _Secrets()
+    monkeypatch.setattr(st, "secrets", fake)
+    return fake
 
-    monkeypatch.setattr(st, "secrets", NoSecrets())
+
+def test_key_from_env(monkeypatch, secrets):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    assert config.get_gemini_api_key() == "test-key"
+
+
+def test_no_key_raises_friendly_error(secrets):
     with pytest.raises(config.MissingApiKeyError) as exc:
         config.get_gemini_api_key()
     assert "GEMINI_API_KEY" in str(exc.value)
     assert "bulunamadı" in str(exc.value)
 
 
-def test_key_from_env(monkeypatch):
-    monkeypatch.setenv("GEMINI_API_KEY", "dummy")
-    assert config.get_gemini_api_key() == "dummy"
+@pytest.mark.parametrize("value", ["   ", "your-key-here"])
+def test_invalid_env_key_raises_friendly_error(monkeypatch, secrets, value):
+    monkeypatch.setenv("GEMINI_API_KEY", value)
+    with pytest.raises(config.MissingApiKeyError) as exc:
+        config.get_gemini_api_key()
+    assert "bulunamadı" in str(exc.value)
 
 
-def test_yolo_url_none_when_unset(monkeypatch):
-    monkeypatch.delenv("YOLO_URL", raising=False)
-    import streamlit as st
+def test_invalid_env_falls_back_to_secrets(monkeypatch, secrets):
+    monkeypatch.setenv("GEMINI_API_KEY", "your-key-here")
+    secrets["GEMINI_API_KEY"] = "secret-key"
+    assert config.get_gemini_api_key() == "secret-key"
 
-    class NoSecrets:
-        def __getitem__(self, name):
-            raise FileNotFoundError("no secrets file")
 
-    monkeypatch.setattr(st, "secrets", NoSecrets())
+def test_yolo_url_none_when_missing(secrets):
     assert config.get_yolo_url() is None
+
+
+def test_app_main_is_callable():
+    import app
+
+    assert callable(app.main)
