@@ -119,7 +119,13 @@ Always list the reasons for the confidence level.
 - **Perception prompt:**
   - find "roof surface" plus obstacles: water tank, air conditioner unit, chimney, solar panel, satellite dish, skylight, other
   - return JSON with label, `box_2d`, optional mask, `roof_type` (flat or pitched), `image_view` (top-down or oblique)
+- **Single class list:** define `OBSTACLE_CLASSES` once in `core/config.py`: `["water tank", "air conditioner unit", "chimney", "solar panel", "satellite dish", "skylight"]`.
+  - The Gemini prompt, the YOLOE `set_classes` call on Kaggle and `fusion.py` all use this exact list.
+  - Gemini may additionally return `"other"`. YOLO never returns it, so `"other"` detections can never be "doğrulandı"; they are always "kontrol et".
+  - `"roof surface"` is not an obstacle class; it is only used for the roof area.
+- **Coordinate conversion:** `vision.py` must return the image width and height with its result. Gemini `box_2d` [ymin, xmin, ymax, xmax] (0–1000) → pixels: x = xmin / 1000 × width, y = ymin / 1000 × height (same for max). YOLO boxes are already in pixels [x1, y1, x2, y2].
 - **Fusion:** match Gemini and YOLO boxes by IoU ≥ 0.3 (after converting both to pixels).
+  - Only boxes with the same label are matched, after normalizing to `OBSTACLE_CLASSES`.
   - matched → "doğrulandı"
   - single-model → "kontrol et"
   - The UI shows an editable confirmation table.
