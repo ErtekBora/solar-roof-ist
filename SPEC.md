@@ -84,6 +84,31 @@ Objective: given a building in Istanbul (and optionally a roof photo), produce a
 | detect_roof_objects | `detect_roof_objects(image_bytes)` | `{roof_type, image_view, roof_area_px, obstacles[], obstacle_ratio, sources: [gemini, yolo]}` |
 | compute_capacity | `compute_capacity(roof_area_m2, obstacle_ratio, roof_type, yield_ideal, yield_shaded, tariff)` | all result numbers (section 6) |
 | run_scenario | `run_scenario(base_result, change)`, e.g. "move water tanks" → obstacle_ratio reduced | new numbers + delta |
+| optimize_layout | `optimize_layout(usable_polygon_m, scenario, exclusion_zones_m=None)` | `{panel_count, kwp, panels: [rectangles], tilt, azimuth, row_pitch_m, coverage_ratio}` |
+
+**Panel layout optimization (Prototype; tool `optimize_layout`, pure geometry, no LLM):**
+- The LLM never places panels or produces panel counts. It chooses scenarios and explains results; the tool computes.
+- Panel size and power are config assumptions shown in the "Varsayımlar" box: `PANEL_LENGTH_M = 1.72`, `PANEL_WIDTH_M = 1.13`, `PANEL_KWP = 0.40`.
+- **Input:** the usable polygon (footprint shrunk by `SETBACK_M`, in metres, EPSG:32635) minus optional exclusion zones.
+- **Search:** grid search over layout rotation (aligned to the polygon's main axis ± 0–90° in 5° steps) and grid offset (a few sub-panel shifts in x and y). Keep the layout with the most panels fully inside the polygon; break ties by the azimuth closest to south.
+- **Flat roofs:**
+  - panels are tilted, so rows need spacing to avoid self-shading
+  - row pitch = L·cos(tilt) + L·sin(tilt) / tan(h_min), where h_min = solar elevation at solar noon on 21 December (≈ 90° − lat − 23.44°)
+  - run for both tilt scenarios (optimal and `FLAT_LOW_TILT_DEG`)
+- **Pitched roofs:**
+  - panels lie flat on each used roof face (no row spacing)
+  - each face is a half of the usable polygon split along the ridge line
+- When a layout exists, kWp = panel_count × PANEL_KWP; this replaces the m²/kWp ratio. The ratio remains the fallback (manual area, no polygon).
+- **Exclusion zones from the photo:**
+  - the demo photo is not geo-referenced to the building, so photo obstacles are NOT placed on the map polygon
+  - on the map, obstacles reduce the panel count proportionally: panel_count × (1 − obstacle_ratio), rounded down
+  - for **top-down** photos only, draw a second layout on the photo itself in pixel space: roof polygon minus obstacle boxes, with metres-per-pixel = sqrt(roof_area_m2 ÷ roof_area_px). This shows panels avoiding the detected objects. Skip this for oblique photos.
+- **Map display:** draw the panel rectangles on the folium map over the building (converted back to WGS84).
+- **Unit tests:**
+  - 10 × 10 m square, no setback, panels flat (pitched case) → at least 5 × 8 = 40 panels (floor(10 / 1.72) × floor(10 / 1.13)); assert ≥ 40 and no overlaps
+  - all panels lie inside the polygon
+  - an exclusion zone in the centre reduces the count
+  - row pitch for tilt 30° at lat 41° matches the formula
 
 **Horizon ray-casting:**
 - For each neighbour, compute the azimuth from the target centroid to each neighbour vertex (and densified edge points).
@@ -171,7 +196,12 @@ Always list the reasons for the confidence level.
   - The UI shows an editable confirmation table.
 - **Roof Agent:**
   - system prompt: Turkish-speaking solar advisor; must call tools for every number; must state assumptions; never ask for personal data
-  - typical order: get_building → compute_horizon → get_solar_yield → detect_roof_objects (if photo) → compute_capacity
+  - typical order: get_building → compute_horizon → get_solar_yield → detect_roof_objects (if photo) → optimize_layout (per scenario) → compute_capacity
+  - **scenario role (MVP):**
+    - the agent decides which layout scenarios to run: flat → optimal tilt vs low tilt; pitched → which faces to use
+    - it calls optimize_layout once per scenario and compares panel count, kWp and annual kWh
+    - it recommends one scenario with a short Turkish reason (e.g. more panels vs more yield per panel)
+    - all numbers come from the tool outputs
 - **Explanation:**
   - input = the result JSON only
   - output: 3 reasons, each tied to a metric (irradiation vs Istanbul average, shading loss and when it happens, obstacle area); 2 recommendations; a structural-check warning
@@ -203,15 +233,15 @@ Always list the reasons for the confidence level.
   - demo buildings coloured by score
 
 ## 9. Output JSON (keys in Turkish, used by UI, agent and explainer)
-`bina_id, lat, lon, cati_tipi, goruntu_turu, toplam_cati_alani_m2, engel_orani, engel_alani_m2, kullanilabilir_alan_m2, kurulabilir_guc_kwp, ideal_uretim_kwh_kwp, golgeli_uretim_kwh_kwp, yillik_isinim_kwh_m2, istanbul_ort_kiyas_yuzde, sicaklik_kaybi_yuzde, golge_kaybi_yuzde, ana_golge_yonu, uygunluk_puani_yuzde, yillik_uretim_kwh, aylik_uretim_kwh[12], yillik_tasarruf_tl_aralik[2], co2_ton_yil, ufuk_cizgisi_72[72], yukseklik_kaynaklari{}, panel_egimi_derece, panel_yonu_derece, yon_kaynagi, cati_yuzleri[], egim_senaryolari[], varsayimlar[], guven_seviyesi, guven_nedenleri[], tespitler[], yz_aciklama_raporu, yz_adimlari[]`
+`bina_id, lat, lon, cati_tipi, goruntu_turu, toplam_cati_alani_m2, engel_orani, engel_alani_m2, kullanilabilir_alan_m2, kurulabilir_guc_kwp, ideal_uretim_kwh_kwp, golgeli_uretim_kwh_kwp, yillik_isinim_kwh_m2, istanbul_ort_kiyas_yuzde, sicaklik_kaybi_yuzde, golge_kaybi_yuzde, ana_golge_yonu, uygunluk_puani_yuzde, yillik_uretim_kwh, aylik_uretim_kwh[12], yillik_tasarruf_tl_aralik[2], co2_ton_yil, ufuk_cizgisi_72[72], yukseklik_kaynaklari{}, panel_egimi_derece, panel_yonu_derece, yon_kaynagi, cati_yuzleri[], egim_senaryolari[], panel_sayisi, panel_yerlesimi[], onerilen_senaryo, varsayimlar[], guven_seviyesi, guven_nedenleri[], tespitler[], yz_aciklama_raporu, yz_adimlari[]`
 
 ## 10. Stages and acceptance criteria
 | Stage | Target date | Scope | Done when |
 |---|---|---|---|
 | Day 0 | Fri 16 Oct | skeleton and map (step 1, local); GitHub + first Render deploy (step 2) | step 1: the map runs locally and the smoke test passes; step 2: the public Render URL shows the map |
 | Demo | Sat 17 Oct | manual roof area + roof type; photo (upload or demo) → Gemini perception + overlay; PVGIS ideal + terrain run; calc; metric cards; monthly chart; "Varsayımlar ve kaynaklar" box; explanation | on the live URL, a demo image + area gives cards + explanation without errors |
-| Prototype | Mon 19 Oct | Overpass building + neighbours; roof area from OSM + geometric setback; roof orientation (user override → OSM tags → ridge estimate → optimal) with two-face PVGIS for pitched roofs and two tilt scenarios for flat roofs; horizon; shaded PVGIS run; shading heatmap; horizon chart; confidence; Istanbul reference; irradiation layer; 5 demo buildings | all 5 demo buildings give results; horizon, ridge and setback unit tests pass |
-| MVP | Tue 20 Oct | Roof Agent + "YZ'nin adımları"; yolo_service on Render + fusion; number check; run_scenario | agent logs ≥ 5 tool calls; app still works with the YOLO service off |
+| Prototype | Mon 19 Oct | Overpass building + neighbours; roof area from OSM + geometric setback; roof orientation (user override → OSM tags → ridge estimate → optimal) with two-face PVGIS for pitched roofs and two tilt scenarios for flat roofs; panel layout optimization (optimize_layout) drawn on the map; horizon; shaded PVGIS run; shading heatmap; horizon chart; confidence; Istanbul reference; irradiation layer; 5 demo buildings | all 5 demo buildings give results; horizon, ridge and setback unit tests pass |
+| MVP | Tue 20 Oct | Roof Agent + "YZ'nin adımları" + scenario selection over optimize_layout; yolo_service on Render + fusion; number check; run_scenario | agent logs ≥ 5 tool calls; app still works with the YOLO service off |
 | Freeze | Wed 21 Oct 18:00 | bug fixes only | screen recording done, texts written |
 
 ## 11. Validation (no field data)
