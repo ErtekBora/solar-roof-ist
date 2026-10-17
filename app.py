@@ -272,6 +272,7 @@ def photo_section(state):
     if obstacles:
         df = pd.DataFrame(
             {
+                "No": [o["id"] for o in obstacles],
                 "Dahil": [True] * len(obstacles),
                 "Engel": [OBSTACLE_LABELS_TR[o["label"]] for o in obstacles],
                 "Güven": [round(o["confidence"] * 100) for o in obstacles],
@@ -282,8 +283,10 @@ def photo_section(state):
         edited = st.data_editor(
             df,
             key=f"obstacles_{detection['image_hash'][:8]}",
-            disabled=["Engel", "Güven"],
+            disabled=["No", "Engel", "Güven"],
+            hide_index=True,
             column_config={
+                "No": st.column_config.NumberColumn("No", format="%d", width="small"),
                 "Dahil": st.column_config.CheckboxColumn("Dahil"),
                 "Güven": st.column_config.NumberColumn("Güven", format="%d%%"),
             },

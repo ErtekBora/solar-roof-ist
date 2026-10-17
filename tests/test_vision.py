@@ -331,7 +331,8 @@ def test_draw_overlay_returns_valid_png(fake_gemini, roof10_json):
     for ids in (None, {0, 1}, set()):
         out = vision.draw_overlay(data, r, ids)
         img = Image.open(io.BytesIO(out))
-        assert img.format == "PNG" and img.size == (r["width"], r["height"])
+        assert img.format == "PNG" and max(img.size) == 800  # roof_10 is small -> upscaled to 800
+        assert img.size[0] / img.size[1] == pytest.approx(r["width"] / r["height"], rel=0.01)
         img.verify()
 
 
@@ -346,3 +347,48 @@ def test_draw_overlay_marks_included_red_and_excluded_grey(fake_gemini):
     img = Image.open(io.BytesIO(vision.draw_overlay(data, r, {0})))
     assert img.getpixel((200, 250)) == (230, 30, 30)  # left edge of included obstacle
     assert img.getpixel((600, 650)) == (150, 150, 150)  # left edge of excluded obstacle
+
+
+def test_overlay_keeps_size_of_large_image_and_scales_small_ones(fake_gemini):
+    fake_gemini([payload()])
+    big = png(1000, 500)
+    r = vision.detect_roof_objects(big)
+    assert Image.open(io.BytesIO(vision.draw_overlay(big, r))).size == (1000, 500)
+
+    fake_gemini([payload()])
+    small = png(200, 100)
+    r = vision.detect_roof_objects(small)
+    assert Image.open(io.BytesIO(vision.draw_overlay(small, r))).size == (800, 400)
+
+
+def test_overlay_scales_coordinates_and_draws_numbered_badges(fake_gemini):
+    obstacles = [
+        {"label": "chimney", "box_2d": [400, 200, 600, 400], "confidence": 0.9},
+        {"label": "skylight", "box_2d": [400, 600, 600, 800], "confidence": 0.9},
+    ]
+    fake_gemini([payload(obstacles=obstacles)])
+    data = png(200, 100)  # upscaled x4 -> 800x400; box 0 spans x 160..320, y 160..240
+    r = vision.detect_roof_objects(data)
+    img = Image.open(io.BytesIO(vision.draw_overlay(data, r, {0}))).convert("RGB")
+    assert img.getpixel((161, 200)) == (230, 30, 30)  # included box edge, in scaled coordinates
+    assert img.getpixel((480, 200)) == (150, 150, 150)  # excluded box (x 480..640) edge is grey
+    assert (0, 200, 0) in [img.getpixel((x, 200)) for x in range(78, 86)]  # roof outline at x=80
+    # the badge sits above the box's top-left corner and is filled with the box colour
+    badge = img.crop((160, 130, 175, 158)).getcolors(maxcolors=10000)
+    assert any(c == (230, 30, 30) for _, c in badge)
+    badge_grey = img.crop((480, 130, 495, 158)).getcolors(maxcolors=10000)
+    assert any(c == (150, 150, 150) for _, c in badge_grey)
+
+
+def test_overlay_line_width_and_font_scale_with_image_size(fake_gemini):
+    obstacles = [{"label": "chimney", "box_2d": [400, 200, 600, 400], "confidence": 0.9}]
+    widths = {}
+    for side in (800, 3200):
+        fake_gemini([payload(obstacles=obstacles)])
+        data = png(side, side)
+        r = vision.detect_roof_objects(data)  # downscaled to 1280 max
+        img = Image.open(io.BytesIO(vision.draw_overlay(data, r))).convert("RGB")
+        y = img.height // 2
+        x0 = round(0.2 * img.width)
+        widths[side] = sum(1 for dx in range(0, 30) if img.getpixel((x0 + dx, y)) == (230, 30, 30))
+    assert widths[3200] > widths[800]

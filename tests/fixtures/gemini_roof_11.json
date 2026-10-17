@@ -1,0 +1,143 @@
+{
+  "roof_polygon": [
+    [
+      97,
+      314
+    ],
+    [
+      83,
+      510
+    ],
+    [
+      71,
+      797
+    ],
+    [
+      121,
+      946
+    ],
+    [
+      628,
+      912
+    ],
+    [
+      908,
+      898
+    ],
+    [
+      911,
+      398
+    ],
+    [
+      978,
+      388
+    ],
+    [
+      978,
+      12
+    ],
+    [
+      720,
+      12
+    ],
+    [
+      721,
+      64
+    ],
+    [
+      164,
+      168
+    ]
+  ],
+  "roof_box": [
+    71,
+    12,
+    978,
+    948
+  ],
+  "obstacles": [
+    {
+      "label": "skylight",
+      "box_2d": [
+        277,
+        226,
+        375,
+        303
+      ],
+      "confidence": 0.92
+    },
+    {
+      "label": "skylight",
+      "box_2d": [
+        389,
+        185,
+        551,
+        296
+      ],
+      "confidence": 0.95
+    },
+    {
+      "label": "skylight",
+      "box_2d": [
+        238,
+        755,
+        330,
+        818
+      ],
+      "confidence": 0.92
+    },
+    {
+      "label": "skylight",
+      "box_2d": [
+        378,
+        746,
+        470,
+        808
+      ],
+      "confidence": 0.9
+    },
+    {
+      "label": "satellite dish",
+      "box_2d": [
+        313,
+        395,
+        439,
+        486
+      ],
+      "confidence": 0.93
+    },
+    {
+      "label": "satellite dish",
+      "box_2d": [
+        380,
+        329,
+        481,
+        393
+      ],
+      "confidence": 0.88
+    },
+    {
+      "label": "other",
+      "box_2d": [
+        632,
+        706,
+        814,
+        908
+      ],
+      "confidence": 0.87
+    },
+    {
+      "label": "other",
+      "box_2d": [
+        715,
+        12,
+        978,
+        388
+      ],
+      "confidence": 0.89
+    }
+  ],
+  "roof_type": "mixed",
+  "image_view": "oblique",
+  "multiple_buildings": false
+}

@@ -135,7 +135,11 @@ def _prompt():
         '- image_view: "top-down" or "oblique".\n'
         "- multiple_buildings: true if more than one building's roof is substantially visible.\n"
         "Rules: shadows, roof texture, edges and parapets are NOT obstacles. Only objects on the main roof "
-        'count. Solar water heaters count as "solar panel".'
+        'count. Solar water heaters count as "solar panel".\n'
+        'Label rules: "solar panel" means a dark, rectangular panel with a visible grid of cells, or a '
+        "flat-plate solar water heater (often with a tank). Awnings, pergolas, terrace canopies, "
+        'winter-garden roofs and glass shelters are "other", NOT "solar panel". A rooftop penthouse, '
+        'stair housing or elevator housing is "other".'
     )
 
 
@@ -394,34 +398,51 @@ def detect_roof_objects(image_bytes):
     return copy.deepcopy(result)
 
 
-_ASCII_FOLD = str.maketrans("çğıöşüÇĞİÖŞÜ", "cgiosuCGIOSU")
+MIN_OVERLAY_SIDE_PX = 800
+_ROOF_GREEN = (0, 200, 0)
+_INCLUDED_RED = (230, 30, 30)
+_EXCLUDED_GREY = (150, 150, 150)
 
 
-def _label_font():
-    """Return (font, can_render_turkish). Pillow's default bitmap font lacks Turkish letters."""
-    for name in ("DejaVuSans.ttf", "arial.ttf", "Arial.ttf"):
+def _badge_font(size):
+    """TrueType font if the system has one, else Pillow's built-in scalable default."""
+    for name in ("DejaVuSans-Bold.ttf", "DejaVuSans.ttf", "arial.ttf", "Arial.ttf"):
         try:
-            return ImageFont.truetype(name, 13), True
+            return ImageFont.truetype(name, size)
         except OSError:
             continue
-    return ImageFont.load_default(), False
+    return ImageFont.load_default(size)
 
 
 def draw_overlay(image_bytes, result, included_ids=None):
-    """Return PNG bytes: roof outline green, included obstacles red with labels, excluded grey and thin."""
+    """Return PNG bytes: roof outline green, numbered obstacle boxes (red included, grey excluded).
+
+    Images with a long side under 800 px are upscaled (LANCZOS) first; coordinates, line widths and
+    the badge font scale with the image. The badge number is the obstacle id shown in the table.
+    """
     img = _load_image(image_bytes)
+    scale = max(1.0, MIN_OVERLAY_SIDE_PX / max(img.size))
+    if scale > 1.0:
+        img = img.resize((round(img.width * scale), round(img.height * scale)), Image.LANCZOS)
+    long_side = max(img.size)
+    line_w = max(2, round(long_side / 250))
+    font = _badge_font(max(12, round(long_side / 45)))
     draw = ImageDraw.Draw(img)
-    font, turkish_ok = _label_font()
-    draw.polygon([tuple(p) for p in result["roof_polygon_px"]], outline=(0, 200, 0), width=3)
+
+    draw.polygon([(x * scale, y * scale) for x, y in result["roof_polygon_px"]], outline=_ROOF_GREEN, width=line_w + 1)
     for obstacle in result["obstacles"]:
-        x1, y1, x2, y2 = obstacle["box_px"]
-        if included_ids is None or obstacle["id"] in included_ids:
-            draw.rectangle([x1, y1, x2, y2], outline=(230, 30, 30), width=2)
-            text = OBSTACLE_LABELS_TR[obstacle["label"]]
-            text = text if turkish_ok else text.translate(_ASCII_FOLD)
-            draw.text((x1 + 2, max(0, y1 - 15)), text, fill=(230, 30, 30), font=font)
-        else:
-            draw.rectangle([x1, y1, x2, y2], outline=(150, 150, 150), width=1)
+        x1, y1, x2, y2 = (v * scale for v in obstacle["box_px"])
+        included = included_ids is None or obstacle["id"] in included_ids
+        colour = _INCLUDED_RED if included else _EXCLUDED_GREY
+        draw.rectangle([x1, y1, x2, y2], outline=colour, width=line_w if included else max(1, line_w // 2))
+        text = str(obstacle["id"])
+        tl, tt, tr, tb = draw.textbbox((0, 0), text, font=font)
+        pad = max(2, line_w)
+        bw, bh = tr - tl + 2 * pad, tb - tt + 2 * pad
+        bx = min(max(0, x1), img.width - bw)
+        by = y1 - bh if y1 - bh >= 0 else y1
+        draw.rectangle([bx, by, bx + bw, by + bh], fill=colour)
+        draw.text((bx + pad - tl, by + pad - tt), text, fill=(255, 255, 255), font=font)
     out = io.BytesIO()
     img.save(out, "PNG")
     return out.getvalue()
