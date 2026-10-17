@@ -304,8 +304,8 @@ def test_template_names_relocatable_obstacles_with_counts_and_never_others(resul
 @pytest.mark.parametrize(
     "labels, expected, absent",
     [
-        (("skylight", "chimney"), "Bacaların çevresinde", "taşı"),
-        (("skylight", "solar panel"), "kurulum firmasından görüş alın", "Bacaların"),
+        (("skylight", "chimney", "chimney", "chimney"), "Çatınızdaki 3 bacanın çevresindeki boşluğu", "taşı"),
+        (("skylight", "solar panel"), "kurulum firmasından görüş alın", "baca"),
         ((), "kurulum firmasından görüş alın", "taşı"),
     ],
 )
@@ -323,3 +323,13 @@ def test_template_has_no_conditional_phrasing(result, detection, with_photo):
     import re
 
     assert not re.search(r"varsa|olması durumunda|[ae]biliyorsa", text)  # "varsayıldı" is fine
+
+
+def test_chimney_tip_states_the_count_and_prompt_has_no_conditional_chimney_wording(result):
+    det = make_detection(("chimney",) * 5)
+    text = build_fallback_explanation(result, det, False)
+    assert "- Çatınızdaki 5 bacanın çevresindeki boşluğu bir kurulum firmasına kontrol ettirin." in text
+    assert validate_explanation_numbers(text, build_payload(result, det, False)) == (True, [])
+    assert "baca" not in build_fallback_explanation(result, make_detection(("skylight",)), False).lower()
+    assert "bacalar varsa" not in explain.SYSTEM_PROMPT and "baca varsa" not in explain.SYSTEM_PROMPT
+    assert "Çatınızdaki 5 bacanın" in explain.SYSTEM_PROMPT

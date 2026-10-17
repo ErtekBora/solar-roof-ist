@@ -39,14 +39,14 @@ Girdi, hesaplanmış sonuçları içeren bir JSON'dur. Yanıtın TAM OLARAK şu 
    a) bu konumdaki yıllık ışınım ve özgül verim;
    b) engel oranı ve kullanılabilir alan. "Ortalama orana göre varsayım" ifadesini YALNIZCA fotograf_var false ise kullan; fotograf_var true ise alanın fotoğraftan ölçüldüğünü söyle;
    c) arazi gölgesi, sıcaklık kaybı veya güven seviyesi.
-3) "-" ile başlayan 2 pratik öneri (ör. fotoğraf açılıysa veya yoksa kuşbakışı fotoğraf deneyin; yalnızca engel_sayilari gerçekten su deposu, klima veya uydu çanağı içeriyorsa onları adetleriyle adlandırarak ("2 uydu çanağı") başka yere taşımayı öner; içermiyorsa taşıma önerme, bunun yerine başka yararlı bir öneri ver: kuşbakışı fotoğraf deneyin veya bacalar varsa çevrelerindeki boşluğu bir kurulum firmasına kontrol ettirin).
+3) "-" ile başlayan 2 pratik öneri (ör. fotoğraf açılıysa veya yoksa kuşbakışı fotoğraf deneyin; yalnızca engel_sayilari gerçekten su deposu, klima veya uydu çanağı içeriyorsa onları adetleriyle adlandırarak ("2 uydu çanağı") başka yere taşımayı öner; içermiyorsa taşıma önerme, bunun yerine başka yararlı bir öneri ver: kuşbakışı fotoğraf deneyin veya engel_sayilari "Baca" içeriyorsa tespit edilen baca sayısını yazarak şöyle öner: "Çatınızdaki 5 bacanın çevresindeki boşluğu bir kurulum firmasına kontrol ettirin.").
 4) Son satır AYNEN şu olsun: {WARNING_LINE}
 
 Kesin kurallar:
 - YALNIZCA girdideki sayıları kullan. Geri ödeme süresi, panel adedi, maliyet, teşvik, kredi koşulu veya girdide olmayan hiçbir yüzdeyi hesaplama ya da uydurma. Sayıları değiştirme, yeniden toplama veya bölme.
 - Şu sözcükleri hiç kullanma: amorti, geri ödeme, geri dönüş süresi, maliyet, yatırım, teşvik, kredi, taksit, fatura, kazanç süresi. Parasal kazancı anlatırken "tasarruf" de.
 - "uygunluk_puani_yuzde" YALNIZCA arazi (tepe) gölgesini yansıtır. Onu sadece "arazi gölgesi açısından" diyerek an; asla genel uygunluk hükmü olarak kullanma. Genel hükmü özgül verim, kullanılabilir alan / kWp ve güven seviyesine dayandır.
-- Yalnızca su deposu, klima ve uydu çanağı başka yere taşınabilir. Çatı penceresi, baca, çatı katı / çatıdaki yapılar ve mevcut güneş panelleri için ASLA kaldırma veya taşıma önerme; bunlardan söz etme (tek istisna: engel_sayilari içinde baca varsa, çevresindeki boşluğu kurulum firmasına kontrol ettirmeyi önerebilirsin).
+- Yalnızca su deposu, klima ve uydu çanağı başka yere taşınabilir. Çatı penceresi, baca, çatı katı / çatıdaki yapılar ve mevcut güneş panelleri için ASLA kaldırma veya taşıma önerme; bunlardan söz etme (tek istisna: engel_sayilari "Baca" içerdiğinde, adedini belirterek çevresindeki boşluğu kurulum firmasına kontrol ettirmeyi önerebilirsin).
 - Koşullu anlatım kullanma ("varsa", "olması durumunda", "-abiliyorsa" gibi). Öneriyi kesin cümleyle yaz.
 - Dilbilgisi açısından doğru Türkçe yaz. "Check" karşılığı emir kipi "kontrol edin" veya "bakın"dır ("kontrol et", "kontrol etmeyi deneyin" yazma).
 - "Özgül verim" derken HER ZAMAN golgeli_uretim_kwh_kwp değerini kullan (ideal_uretim_kwh_kwp değil).
@@ -251,7 +251,7 @@ def build_fallback_explanation(result, detection=None, demo_photo=False):
     if relocatable:
         tip2 = f"- Çatıda {relocatable} var; bunları başka bir yere taşımanın mümkün olup olmadığına bakın, kullanılabilir alan artar."
     elif "Baca" in p.get("engel_sayilari", {}):
-        tip2 = "- Bacaların çevresinde panel için yeterli boşluk kalıp kalmadığını bir kurulum firmasına kontrol ettirin."
+        tip2 = f"- Çatınızdaki {p['engel_sayilari']['Baca']} bacanın çevresindeki boşluğu bir kurulum firmasına kontrol ettirin."
     else:
         tip2 = "- Çatıda yerinde ölçüm ve gölge kontrolü için bir kurulum firmasından görüş alın; komşu bina gölgesi sonraki aşamada eklenecek."
     return "\n".join([verdict, *bullets, photo_tip, tip2, WARNING_LINE])
