@@ -39,9 +39,25 @@ def fake_gemini(monkeypatch):
 
     def install(outputs):
         client = FakeGemini(outputs)
-        monkeypatch.setattr(vision, "_get_client", lambda: client)
+        monkeypatch.setattr(vision, "_get_client", lambda api_key=None: client)
         client.sleeps = sleeps
         return client
 
     yield install
     vision.clear_cache()
+
+
+@pytest.fixture
+def fake_explain(monkeypatch):
+    """Install a scripted fake Gemini client for core.explain; returns install(outputs) -> FakeGemini."""
+    from core import explain
+
+    explain.clear_cache()
+
+    def install(outputs):
+        client = FakeGemini(outputs)
+        monkeypatch.setattr(explain, "_get_client", lambda api_key=None: client)
+        return client
+
+    yield install
+    explain.clear_cache()

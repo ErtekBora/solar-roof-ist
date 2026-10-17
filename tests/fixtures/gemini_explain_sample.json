@@ -1,0 +1,40 @@
+{
+  "model": "gemini-3.5-flash-lite",
+  "payload": {
+    "cati_tipi": "flat",
+    "goruntu_turu": "oblique",
+    "guven_seviyesi": "Düşük",
+    "guven_nedenleri": [
+      "Fotoğraf yandan/eğik açıdan çekilmiş; çatı ve engel alanları daha az güvenilir.",
+      "Bina yüksekliği ve komşu bina verisi henüz kullanılmıyor; yalnızca arazi gölgesi hesaplandı."
+    ],
+    "tarife_tl_kwh": 3.0,
+    "yillik_uretim_kwh": 19575,
+    "yillik_isinim_kwh_m2": 1739,
+    "ideal_uretim_kwh_kwp": 1373,
+    "golgeli_uretim_kwh_kwp": 1370,
+    "panel_egim_derece": 33,
+    "panel_yon_derece": 8,
+    "toplam_cati_alani_m2": 150.0,
+    "engel_alani_m2": 40.7,
+    "kullanilabilir_alan_m2": 92.9,
+    "kurulabilir_guc_kwp": 14.3,
+    "golge_kaybi_yuzde": 0.2,
+    "uygunluk_puani_yuzde": 99.8,
+    "sicaklik_kaybi_yuzde": 6.5,
+    "co2_ton_yil": 12.4,
+    "engel_orani": 0.271,
+    "yillik_tasarruf_tl_aralik": [
+      29362,
+      58724
+    ],
+    "fotograf_var": true,
+    "demo_photo": true,
+    "engel_sayilari": {
+      "Çatı penceresi": 4,
+      "Uydu çanağı": 2,
+      "Diğer": 2
+    }
+  },
+  "text": "Bu çatıya kurulabilecek güç 14,3 kWp olup özgül verim 1.370 kWh/kWp seviyesindedir ve güven seviyesi Düşük olarak belirlenmiştir. Bu görüntü yalnızca bir örnek fotoğraf olup kullanıcının kendi çatısına ait değildir.\n- Bu konumdaki yıllık ışınım 1.739 kWh/m² ve özgül verim 1.370 kWh/kWp düzeyindedir.\n- Engel oranı %27,1 olup kullanılabilir alanın 92,9 m² olduğu fotoğraftan ölçülmüştür.\n- Arazi gölgesi açısından uygunluk puanı %99,8, sıcaklık kaybı %6,5 ve güven seviyesi Düşük olarak hesaplanmıştır.\n- Fotoğraf eğik açılı olduğundan kendi binanızın kuşbakışı fotoğrafını deneyin.\n- Engel sayılarında görülen uydu çanağını başka yere almanın mümkün olup olmadığına bakın.\n⚠️ Kurulumdan önce çatının statik taşıma kapasitesini yetkili bir mühendise kontrol ettirin."
+}

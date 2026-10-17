@@ -1,4 +1,5 @@
 """Streamlit UI (Turkish): Istanbul rooftop solar suitability tool."""
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import altair as alt
@@ -7,6 +8,7 @@ import pandas as pd
 import streamlit as st
 from streamlit_folium import st_folium
 
+from core import explain
 from core.calc import compute_capacity
 from core.config import (
     CO2_FACTOR_T_PER_MWH,
@@ -15,9 +17,12 @@ from core.config import (
     M2_PER_KWP_PITCHED,
     MAP_CENTER,
     MAP_ZOOM,
+    EXPLAIN_MODEL,
     MAX_UPLOAD_MB,
     USABLE_RATIO_NO_PHOTO,
+    MissingApiKeyError,
     default_tariff,
+    get_gemini_api_key,
 )
 from core.solar import SolarDataError, get_solar_yield
 from core.vision import (
@@ -113,6 +118,49 @@ def recompute(solar, inputs, detection, included_ids):
     return result, ratio
 
 
+def format_savings_short(lo, hi):
+    """Card-sized savings range: thousands with one decimal ("27,5 – 55,0 bin TL")."""
+    if hi < 1000:
+        return f"{tr_num(lo)} – {tr_num(hi)} TL"
+    return f"{tr_num(lo / 1000, 1)} – {tr_num(hi / 1000, 1)} bin TL"
+
+
+def resolve_api_key():
+    """Return (key, None) or (None, Turkish message). Main thread only: it may read st.secrets."""
+    try:
+        return get_gemini_api_key(), None
+    except MissingApiKeyError as exc:
+        return None, str(exc)
+
+
+def explained_detection(detection, included_ids):
+    """Detection restricted to the obstacles still ticked in the table (what the explanation may mention)."""
+    if detection is None:
+        return None
+    return {**detection, "obstacles": [o for o in detection["obstacles"] if o["id"] in included_ids]}
+
+
+def generate_explanation(result, detection, demo_photo, api_key):
+    """Build the explanation state {text, source, key}. Without a key the template is used (no Gemini call)."""
+    key = explain.payload_key(explain.build_payload(result, detection, demo_photo))
+    if api_key is None:
+        text = explain.build_fallback_explanation(result, detection, demo_photo)
+        return {"text": text, "source": "template", "key": key}
+    out = explain.explain_result(result, detection, api_key=api_key, demo_photo=demo_photo)
+    return {"text": out["text"], "source": out["source"], "key": key}
+
+
+def explanation_is_stale(explanation, result, detection, demo_photo):
+    """True when the stored explanation was generated for different numbers than the current result."""
+    return explanation["key"] != explain.payload_key(explain.build_payload(result, detection, demo_photo))
+
+
+def regenerate_explanation(result, detection, demo_photo):
+    """Re-explain the current result (button handler, main thread) and return the new explanation state."""
+    api_key, _ = resolve_api_key()
+    return generate_explanation(result, detection, demo_photo, api_key)
+
+
 def parse_sources(path=DEMO_DIR / "SOURCES.md"):
     """Parse SOURCES.md into {filename: {source, author, license, link}}."""
     rows = {}
@@ -135,7 +183,7 @@ def source_caption(filename):
     return f"Kaynak: {info['source']} · Yazar: {info['author']} · Lisans: {info['license']} · {link}"
 
 
-def assumption_rows(r, inputs, detection):
+def assumption_rows(r, inputs, detection, explanation=None):
     """'Varsayımlar ve kaynaklar' table: one row per shown number (SPEC section 8)."""
     rows = [
         ("Çatı alanı", f"{tr_num(inputs['area'], 1)} m²", "Kullanıcı girdisi", "Kenar çubuğunda elle girilen değer"),
@@ -167,8 +215,14 @@ def assumption_rows(r, inputs, detection):
         ("Güven seviyesi", r["guven_seviyesi"], "Varsayım", "Demo aşamasında yalnızca fotoğrafa bağlı kural"),
         ("Komşu bina gölgesi", "—", "Sonraki aşamada", "OSM bina verisi ile"),
         ("Çatı alanı (OSM'den)", "—", "Sonraki aşamada", "OSM bina izi ve geometrik kenar boşluğu"),
-        ("YZ açıklaması", "—", "Sonraki aşamada", "Gemini ile gerekçeli Türkçe açıklama"),
     ]
+    if explanation is not None:
+        if explanation["source"] == "gemini":
+            note = f"{EXPLAIN_MODEL}; metindeki her sayı sonuçlarla karşılaştırıldı"
+            rows.append(("YZ açıklaması", "Gemini", "YZ yorumu (sayılar doğrulandı)", note))
+        else:
+            note = "YZ yanıtı kullanılamadı; sonuçlardan üretilen sabit metin"
+            rows.append(("YZ açıklaması", "Standart şablon", "Şablon", note))
     if inputs.get("demo_photo"):
         rows.append(("Demo fotoğrafı", "—", "Varsayım", "Demo fotoğrafı örnektir; seçilen binanın kendi çatısı değildir."))
     return pd.DataFrame(rows, columns=["Değer", "Sonuç", "Durum", "Kaynak / not"])
@@ -194,7 +248,7 @@ def monthly_chart(result):
     st.altair_chart(chart, use_container_width=True)
 
 
-def show_result(r):
+def show_cards(r):
     lo, hi = r["yillik_tasarruf_tl_aralik"]
     c1, c2, c3 = st.columns(3)
     c1.metric("Uygunluk (arazi gölgesi)", f"%{tr_num(r['uygunluk_puani_yuzde'], 1)}")
@@ -203,7 +257,9 @@ def show_result(r):
     c3.metric("Yıllık üretim", f"{tr_num(r['yillik_uretim_kwh'])} kWh")
 
     c4, c5, c6 = st.columns(3)
-    c4.metric("Yıllık tasarruf (aralık)", f"{tr_num(lo)} – {tr_num(hi)} TL")
+    c4.metric(
+        "Yıllık tasarruf (aralık)", format_savings_short(lo, hi), help=f"Kesin aralık: {tr_num(lo)} – {tr_num(hi)} TL"
+    )
     c4.caption("Alt sınır: üretimin yarısı kendi tüketiminizde; üst sınır: tamamı.")
     c5.metric("CO₂ azaltımı", f"{tr_num(r['co2_ton_yil'], 1)} ton/yıl")
     c6.metric("Güven seviyesi", r["guven_seviyesi"])
@@ -221,12 +277,54 @@ def show_result(r):
         for reason in r["guven_nedenleri"]:
             st.write(f"- {reason}")
 
+
+def show_monthly(r):
     st.subheader("Aylık üretim")
     monthly_chart(r)
     st.caption(
         f"Paneller en uygun eğim ({r['panel_egim_derece']}°) ve yönde varsayıldı. "
         f"Kullanılabilir alan: {tr_num(r['kullanilabilir_alan_m2'], 1)} m²."
     )
+
+
+EXPLANATION_CAPTIONS = {
+    "gemini": "Kaynak: Gemini (tüm sayılar doğrulandı)",
+    "template": "Kaynak: Standart şablon (YZ yanıtı kullanılamadı)",
+}
+
+
+def render_explanation_text(text):
+    """Verdict (first line) in bold, bullets as a list, the warning line as a warning box."""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return
+    st.markdown(f"**{lines[0]}**")
+    bullets = [ln for ln in lines[1:] if ln.startswith("-")]
+    if bullets:
+        st.markdown("\n".join(bullets))
+    for ln in lines[1:]:
+        if not ln.startswith("-"):
+            st.warning(ln.replace("⚠️", "").strip())
+
+
+def explanation_section(analysis, result, ids):
+    """'Yapay Zekâ Değerlendirmesi': last explanation, a stale notice and a manual refresh (no auto Gemini call)."""
+    explanation = st.session_state.get("explanation")
+    if not explanation:
+        return
+    detection = explained_detection(analysis["detection"], ids or set())
+    demo = analysis["inputs"].get("demo_photo", False)
+    st.subheader("Yapay Zekâ Değerlendirmesi")
+    if analysis.get("key_error") and not analysis.get("vision_error"):
+        st.warning(analysis["key_error"])
+    if explanation_is_stale(explanation, result, detection, demo):
+        st.info("Değerler değişti; açıklama güncel değil.")
+        if st.button("Açıklamayı YZ ile güncelle"):
+            with st.spinner("Açıklama güncelleniyor…"):
+                st.session_state["explanation"] = regenerate_explanation(result, detection, demo)
+            st.rerun()
+    render_explanation_text(explanation["text"])
+    st.caption(EXPLANATION_CAPTIONS[explanation["source"]])
 
 
 def photo_sidebar():
@@ -336,36 +434,52 @@ def main():
         elif not tariff or tariff <= 0:
             st.error("Lütfen elektrik tarifesini (TL/kWh) girin.")
         else:
+            api_key, key_error = resolve_api_key()  # main thread: workers never touch st.*
             try:
-                with st.spinner("PVGIS verileri alınıyor, lütfen bekleyin…"):
-                    solar = get_solar_yield(point[0], point[1])
                 detection, vision_error = None, None
-                if image_bytes is not None:
-                    try:
-                        with st.spinner("Fotoğraf analiz ediliyor…"):
-                            detection = detect_roof_objects(image_bytes)
-                    except VisionError as exc:
-                        vision_error = str(exc)
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    solar_future = pool.submit(get_solar_yield, point[0], point[1])
+                    vision_future = None
+                    if image_bytes is not None:
+                        if api_key:
+                            vision_future = pool.submit(detect_roof_objects, image_bytes, api_key)
+                        else:
+                            vision_error = key_error
+                    with st.spinner("PVGIS verileri ve fotoğraf analizi bekleniyor, lütfen bekleyin…"):
+                        solar = solar_future.result()
+                        if vision_future is not None:
+                            try:
+                                detection = vision_future.result()
+                            except VisionError as exc:
+                                vision_error = str(exc)
                 roof_type, roof_tag, roof_note = resolve_roof_type(roof_label, detection)
+                inputs = {
+                    "lat": point[0], "lon": point[1], "area": area, "tariff": tariff,
+                    "roof_type": roof_type, "roof_tag": roof_tag,
+                    "demo_photo": bool(detection) and is_demo,
+                }
                 st.session_state["analysis"] = {
                     "solar": solar,
                     "detection": detection,
                     "vision_error": vision_error,
+                    "key_error": key_error,
                     "roof_note": roof_note,
                     "photo_bytes": image_bytes if detection else None,
-                    "inputs": {
-                        "lat": point[0], "lon": point[1], "area": area, "tariff": tariff,
-                        "roof_type": roof_type, "roof_tag": roof_tag,
-                        "demo_photo": bool(detection) and is_demo,
-                    },
+                    "inputs": inputs,
                 }
+                all_ids = {o["id"] for o in detection["obstacles"]} if detection else set()
+                first, _ = recompute(solar, inputs, detection, all_ids)
+                with st.spinner("YZ açıklaması hazırlanıyor…"):
+                    st.session_state["explanation"] = generate_explanation(
+                        first, explained_detection(detection, all_ids), inputs["demo_photo"], api_key
+                    )
             except SolarDataError as exc:
-                st.session_state.pop("analysis", None)
-                st.session_state.pop("result", None)
+                for k in ("analysis", "result", "explanation"):
+                    st.session_state.pop(k, None)
                 st.error(str(exc))
             except ValueError:
-                st.session_state.pop("analysis", None)
-                st.session_state.pop("result", None)
+                for k in ("analysis", "result", "explanation"):
+                    st.session_state.pop(k, None)
                 st.error("Girdiler geçersiz görünüyor. Lütfen çatı alanını ve tarifeyi kontrol edin.")
 
     analysis = st.session_state.get("analysis")
@@ -381,9 +495,15 @@ def main():
             )
         st.markdown("---")
         st.subheader(f"Sonuçlar ({result['lat']:.4f}, {result['lon']:.4f})")
-        show_result(result)
+        show_cards(result)
+        explanation_section(analysis, result, ids)
+        show_monthly(result)
         st.subheader("Varsayımlar ve kaynaklar")
-        st.dataframe(assumption_rows(result, analysis["inputs"], detection), hide_index=True, width="stretch")
+        st.dataframe(
+            assumption_rows(result, analysis["inputs"], detection, st.session_state.get("explanation")),
+            hide_index=True,
+            width="stretch",
+        )
 
     st.markdown("---")
     st.caption("© OpenStreetMap katkıcıları · Güneş verisi: PVGIS (JRC)")

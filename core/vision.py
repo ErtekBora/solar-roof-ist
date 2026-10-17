@@ -170,12 +170,12 @@ def _response_schema():
     }
 
 
-def _get_client():
-    """Create the Gemini client lazily (heavy import); patched in tests."""
+def _get_client(api_key=None):
+    """Create the Gemini client lazily (heavy import); patched in tests. A given api_key skips the lookup."""
     from google import genai
 
     try:
-        return genai.Client(api_key=get_gemini_api_key())
+        return genai.Client(api_key=api_key or get_gemini_api_key())
     except MissingApiKeyError as exc:
         raise VisionError(str(exc)) from exc
 
@@ -218,9 +218,9 @@ def _generate(client, jpeg_bytes):
             raise VisionError(_MSG_API) from exc
 
 
-def _ask_gemini(jpeg_bytes):
+def _ask_gemini(jpeg_bytes, api_key=None):
     """Return the parsed JSON dict; retry once on malformed JSON."""
-    client = _get_client()
+    client = _get_client(api_key)
     for attempt in range(2):
         text = _generate(client, jpeg_bytes)
         try:
@@ -359,7 +359,7 @@ def _pixel_centre_mask(poly, xs, ys):
 
 # ------------------------------------------------------------------ public API
 
-def detect_roof_objects(image_bytes):
+def detect_roof_objects(image_bytes, api_key=None):
     """Detect the main roof, obstacles, roof type and image view in a roof photo.
 
     Returns {roof_type, image_view, multiple_buildings, width, height, roof_source, roof_polygon_px,
@@ -374,7 +374,7 @@ def detect_roof_objects(image_bytes):
     width, height = img.size
     buf = io.BytesIO()
     img.save(buf, "JPEG", quality=90)
-    data = _ask_gemini(buf.getvalue())
+    data = _ask_gemini(buf.getvalue(), api_key)
 
     roof_polygon_px, roof_area_px, roof_source = _extract_roof(data, width, height)
     obstacles = _filter_obstacles(data.get("obstacles"), roof_polygon_px, width, height)

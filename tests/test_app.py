@@ -5,7 +5,7 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 import app
-from core import config, solar
+from core import config, explain, solar
 from core.solar import _parse_pvcalc
 
 ROOT = Path(__file__).parent.parent
@@ -23,6 +23,10 @@ def mocked(monkeypatch):
     monkeypatch.setattr(app, "get_solar_yield", _fake_yield)
     monkeypatch.setattr(solar, "get_solar_yield", _fake_yield)  # AppTest re-executes app.py
     monkeypatch.setattr(config, "TARIFF_TL_PER_KWH", 0.0)
+    monkeypatch.setattr(config, "get_gemini_api_key", lambda: "test-key")  # never read the real secrets file
+    explain.clear_cache()
+    # default: the explanation model is unavailable -> template; tests wanting Gemini install fake_explain
+    monkeypatch.setattr(explain, "_get_client", lambda api_key=None: (_ for _ in ()).throw(RuntimeError("offline")))
 
 
 def test_calculate_builds_result(mocked):
@@ -228,3 +232,134 @@ def test_vision_error_falls_back_to_no_photo_calculation(mocked, fake_gemini, sp
     assert spy_capacity[-1]["args"][1] is None
     assert at.session_state["result"]["guven_seviyesi"] == "Düşük"
     assert len(at.metric) == 9
+
+
+# ------------------------------------------------------------- explanation (Demo-3)
+
+EXPLAIN_BUTTON = "Açıklamayı YZ ile güncelle"
+
+
+def _flow_text():
+    """A valid Gemini-like text for the no-photo flow (template text passes the validator by construction)."""
+    return explain.build_fallback_explanation(app.calculate(41.015, 28.979, 150.0, "flat", 3.0))
+
+
+def _run_no_photo():
+    at = _run_with_point()
+    at.number_input[1].set_value(3.0)
+    at.button[0].click().run()
+    return at
+
+
+def test_explanation_section_shows_gemini_text_and_source(mocked, fake_explain):
+    client = fake_explain([_flow_text()])
+    at = _run_no_photo()
+    assert not at.exception and client.calls == 1
+    assert "Yapay Zekâ Değerlendirmesi" in [h.value for h in at.subheader]
+    assert any(m.value.startswith("**") and "kWp" in m.value for m in at.markdown)  # bold verdict
+    assert any("statik taşıma" in w.value for w in at.warning)
+    assert "Kaynak: Gemini (tüm sayılar doğrulandı)" in [c.value for c in at.caption]
+    assert at.session_state["explanation"]["source"] == "gemini"
+    at.run()  # a rerun must not call Gemini again
+    assert client.calls == 1
+
+
+def test_template_source_when_gemini_fails(mocked):
+    at = _run_no_photo()
+    assert not at.exception
+    assert "Kaynak: Standart şablon (YZ yanıtı kullanılamadı)" in [c.value for c in at.caption]
+    assert any("statik taşıma" in w.value for w in at.warning)
+    assert at.session_state["explanation"]["source"] == "template"
+
+
+def test_no_photo_flow_has_nine_cards_and_explanation(mocked):
+    at = _run_no_photo()
+    assert len(at.metric) == 9 and "explanation" in at.session_state
+
+
+def test_missing_key_skips_vision_and_uses_template(mocked, fake_gemini, monkeypatch):
+    def no_key():
+        raise config.MissingApiKeyError("Gemini API anahtarı bulunamadı. Test.")
+
+    monkeypatch.setattr(config, "get_gemini_api_key", no_key)
+    client = fake_gemini([])
+    at = _run_demo_photo("roof_10.jpg")
+    at.button[0].click().run()
+    assert not at.exception and client.calls == 0
+    assert any("anahtarı bulunamadı" in w.value for w in at.warning)
+    assert at.session_state["explanation"]["source"] == "template"
+    assert len(at.metric) == 9
+
+
+def test_api_key_is_resolved_in_main_thread_and_passed_to_worker(mocked, monkeypatch, roof10_json):
+    seen = []
+
+    def spy(image_bytes, api_key=None):
+        seen.append(api_key)
+        raise vision.VisionError("Test hatası.")
+
+    monkeypatch.setattr(vision, "detect_roof_objects", spy)
+    at = _run_demo_photo("roof_10.jpg")
+    at.button[0].click().run()
+    assert not at.exception and seen == ["test-key"]
+    assert any("Test hatası." in w.value for w in at.warning)
+
+
+def test_obstacle_edit_makes_explanation_stale_without_gemini_then_regenerate_clears_it(
+    mocked, fake_explain, monkeypatch
+):
+    solar = _fake_yield(41.0, 29.0)
+    det = _square_detection()
+    inputs = dict(_inputs(), demo_photo=False)
+    monkeypatch.setattr(app, "get_gemini_api_key", lambda: "test-key")
+    result_all, _ = app.recompute(solar, inputs, det, {0, 1})
+    client = fake_explain([explain.build_fallback_explanation(result_all, app.explained_detection(det, {0, 1}), False)] * 2)
+    exp = app.generate_explanation(result_all, app.explained_detection(det, {0, 1}), False, "k")
+    assert exp["source"] == "gemini" and client.calls == 1
+
+    result_one, _ = app.recompute(solar, inputs, det, {0})  # obstacle 1 unticked
+    det_one = app.explained_detection(det, {0})
+    assert not app.explanation_is_stale(exp, result_all, app.explained_detection(det, {0, 1}), False)
+    assert app.explanation_is_stale(exp, result_one, det_one, False)
+    assert client.calls == 1  # detecting staleness never calls Gemini
+
+    fake_explain([explain.build_fallback_explanation(result_one, det_one, False)])
+    new = app.regenerate_explanation(result_one, det_one, False)
+    assert new["source"] == "gemini" and not app.explanation_is_stale(new, result_one, det_one, False)
+
+
+def test_stale_notice_and_update_button_in_ui(mocked, fake_explain):
+    client = fake_explain([_flow_text(), _flow_text()])
+    at = _run_no_photo()
+    assert client.calls == 1 and not any("açıklama güncel değil" in i.value for i in at.info)
+    assert not [b for b in at.button if b.label == EXPLAIN_BUTTON]
+
+    at.session_state["explanation"] = {**at.session_state["explanation"], "key": "old"}
+    at.run()
+    assert client.calls == 1  # the stale notice never triggers Gemini
+    assert any("Değerler değişti; açıklama güncel değil." in i.value for i in at.info)
+    assert any("kWp" in m.value for m in at.markdown)  # last explanation is kept
+    [button] = [b for b in at.button if b.label == EXPLAIN_BUTTON]
+    explain.clear_cache()  # same numbers as the first run would otherwise be an explain cache hit
+    button.click().run()
+    assert client.calls == 2 and not at.exception
+    assert not any("açıklama güncel değil" in i.value for i in at.info)
+    assert not [b for b in at.button if b.label == EXPLAIN_BUTTON]
+
+
+def test_savings_short_format_and_tooltip(mocked):
+    assert app.format_savings_short(27515, 55031) == "27,5 – 55,0 bin TL"
+    assert app.format_savings_short(500, 900) == "500 – 900 TL"
+    at = _run_no_photo()
+    card = next(m for m in at.metric if m.label == "Yıllık tasarruf (aralık)")
+    assert card.value.endswith("bin TL") and "Kesin aralık:" in card.help and card.help.endswith("TL")
+
+
+def test_assumption_row_shows_active_explanation_source():
+    solar = _fake_yield(41.0, 29.0)
+    r, _ = app.recompute(solar, _inputs(), None, set())
+    row = lambda src: app.assumption_rows(r, _inputs(), None, {"source": src})
+    gem = row("gemini")
+    assert "YZ yorumu (sayılar doğrulandı)" in set(gem["Durum"])
+    assert "Şablon" in set(row("template")["Durum"])
+    assert "YZ açıklaması" not in set(app.assumption_rows(r, _inputs(), None)["Değer"])
