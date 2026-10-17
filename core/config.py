@@ -23,10 +23,22 @@ def default_tariff():
     """Return the configured tariff, or None while it is still the placeholder."""
     return TARIFF_TL_PER_KWH if TARIFF_TL_PER_KWH > 0 else None
 
-# TODO: verify current model IDs in the Gemini API docs
-VISION_MODEL = "TODO-flash-model-id"
-AGENT_MODEL = "TODO-flash-model-id"
-EXPLAIN_MODEL = "TODO-flash-lite-model-id"
+# Model IDs verified with client.models.list()
+VISION_MODEL = "gemini-3.8-flash"
+AGENT_MODEL = "gemini-3.8-flash"
+EXPLAIN_MODEL = "gemini-3.5-flash-lite"
+
+# Single obstacle class list (SPEC section 7); Gemini may additionally return "other"
+OBSTACLE_CLASSES = [
+    "water tank",
+    "air conditioner unit",
+    "chimney",
+    "solar panel",
+    "satellite dish",
+    "skylight",
+]
+MAX_IMAGE_SIDE_PX = 1280
+MAX_UPLOAD_MB = 5
 
 _MISSING_KEY_MSG = (
     "Gemini API anahtarı bulunamadı. Lütfen GEMINI_API_KEY ortam değişkenini "

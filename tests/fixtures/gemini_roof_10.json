@@ -1,0 +1,147 @@
+{
+  "roof_polygon": [
+    [
+      289,
+      71
+    ],
+    [
+      156,
+      449
+    ],
+    [
+      85,
+      637
+    ],
+    [
+      116,
+      795
+    ],
+    [
+      318,
+      891
+    ],
+    [
+      721,
+      959
+    ],
+    [
+      624,
+      915
+    ],
+    [
+      660,
+      654
+    ],
+    [
+      839,
+      610
+    ],
+    [
+      867,
+      396
+    ],
+    [
+      945,
+      189
+    ],
+    [
+      700,
+      150
+    ],
+    [
+      289,
+      71
+    ]
+  ],
+  "roof_box": [
+    85,
+    71,
+    945,
+    963
+  ],
+  "obstacles": [
+    {
+      "label": "skylight",
+      "box_2d": [
+        215,
+        680,
+        281,
+        734
+      ],
+      "confidence": 0.9
+    },
+    {
+      "label": "skylight",
+      "box_2d": [
+        322,
+        708,
+        390,
+        764
+      ],
+      "confidence": 0.9
+    },
+    {
+      "label": "skylight",
+      "box_2d": [
+        344,
+        196,
+        423,
+        252
+      ],
+      "confidence": 0.85
+    },
+    {
+      "label": "skylight",
+      "box_2d": [
+        461,
+        219,
+        545,
+        274
+      ],
+      "confidence": 0.85
+    },
+    {
+      "label": "satellite dish",
+      "box_2d": [
+        343,
+        575,
+        412,
+        621
+      ],
+      "confidence": 0.88
+    },
+    {
+      "label": "satellite dish",
+      "box_2d": [
+        406,
+        399,
+        477,
+        455
+      ],
+      "confidence": 0.88
+    },
+    {
+      "label": "air conditioner unit",
+      "box_2d": [
+        348,
+        447,
+        417,
+        513
+      ],
+      "confidence": 0.8
+    },
+    {
+      "label": "air conditioner unit",
+      "box_2d": [
+        354,
+        521,
+        416,
+        582
+      ],
+      "confidence": 0.8
+    }
+  ],
+  "roof_type": "pitched",
+  "image_view": "oblique",
+  "multiple_buildings": false
+}
