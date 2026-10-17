@@ -93,11 +93,44 @@ Objective: given a building in Istanbul (and optionally a roof photo), produce a
 - Final horizon = element-wise max(building horizon, terrain horizon).
 - Unit test: a neighbour 30 m due west and 15 m taller → 26.57° in the West bin.
 
+**Roof geometry and panel orientation (Prototype):**
+- **Roof area** comes from the OSM footprint (in EPSG:32635), replacing the manual input. Manual input remains as a fallback when no building is found.
+- **Geometric edge setback:**
+  - instead of the constant EDGE_FACTOR, shrink the footprint inward by `SETBACK_M` (config, default 1.0 m, an explicit assumption): `usable_polygon = footprint.buffer(-SETBACK_M)`
+  - if the result is empty (very small roof), usable area = 0, with a Turkish reason
+  - EDGE_FACTOR (0.85) is used only when there is no polygon (manual area)
+- **Flat roofs:**
+  - panels are rack-mounted, so orientation is a design choice
+  - run PVGIS for two scenarios: (a) optimal tilt/azimuth, (b) low tilt `FLAT_LOW_TILT_DEG` (config, default 10°, explicit assumption) facing south (aspect 0)
+  - show both; the headline uses (a)
+  - explain in Turkish that (b) fits more panels with less row shading and lower wind load
+- **Pitched roofs: orientation source, in this priority order:**
+  1. **User override:** UI select "Çatı yönü" (K, KD, D, GD, G, GB, B, KB) and a tilt slider "Çatı eğimi (°)".
+  2. **OSM tags** `roof:direction` (degrees or compass letters) and `roof:angle`.
+  3. **Ridge estimate from the polygon:**
+     - take `footprint.minimum_rotated_rectangle`; its long side is the ridge direction
+     - the two roof faces face perpendicular to the ridge (two opposite azimuths)
+     - tilt = `DEFAULT_ROOF_PITCH_DEG` (config, default 30°, explicit assumption shown in the UI)
+  4. **Fallback:** optimal orientation (today's behaviour), with a Turkish reason.
+- **Two-face calculation (pitched, sources 2–3 without a single direction):**
+  - run PVGIS once per face (convert compass azimuth to the PVGIS aspect convention: 0 = South, −90 = East, 90 = West)
+  - each face gets half of the usable area
+  - include a face only if its specific yield ≥ 80% of the ideal (optimal) yield
+  - report both faces and which ones were used
+- Record `yon_kaynagi` as one of `"user"`, `"osm_tag"`, `"ridge_estimate"`, `"optimal_assumed"`.
+- Unit tests:
+  - ridge azimuth of a rectangle rotated 30°
+  - compass ↔ PVGIS aspect conversion: S → 0, E → −90, W → 90, N → 180
+  - setback on a 10 × 10 m square with 1 m → 64 m²
+  - empty result on a 1.5 × 1.5 m square
+
 ## 6. Calculations
 | Quantity | Formula |
 |---|---|
-| Usable area (with photo) | roof_area × 0.85 × (1 − obstacle_ratio) |
-| Usable area (no photo) | roof_area × 0.276 |
+| Usable area (OSM polygon + photo, Prototype+) | area(footprint.buffer(−SETBACK_M)) × (1 − obstacle_ratio) |
+| Usable area (OSM polygon, no photo) | area(footprint.buffer(−SETBACK_M)) × (0.276 ÷ 0.85), labelled "ortalama varsayım" |
+| Usable area (manual area + photo) | roof_area × 0.85 × (1 − obstacle_ratio) |
+| Usable area (no photo) | roof_area × 0.276, labelled "ortalama varsayım" in the UI |
 | obstacle_ratio | obstacle area ÷ roof area in pixels (scale-free; union of obstacle boxes/masks clipped to the roof) |
 | kWp | usable_area ÷ 6.5 (flat) or ÷ 5.5 (pitched) |
 | Suitability (%) | E_shaded ÷ E_ideal × 100 |
@@ -112,6 +145,13 @@ Objective: given a building in Istanbul (and optionally a roof photo), produce a
 - **Düşük:** no photo AND most heights are defaults
 
 In the Demo stage (no building data yet), confidence depends on the photo only: top-down = Orta, oblique or no photo = Düşük.
+
+Orientation also adds a reason (Prototype+):
+- `yon_kaynagi` = `"user"` or `"osm_tag"` → positive reason ("çatı yönü biliniyor")
+- `"ridge_estimate"` → "çatı yönü bina şeklinden tahmin edildi"
+- `"optimal_assumed"` → "çatı yönü bilinmiyor; en uygun yön varsayıldı"
+
+For pitched roofs, `"optimal_assumed"` prevents "Yüksek" confidence.
 
 Always list the reasons for the confidence level.
 
@@ -149,6 +189,13 @@ Always list the reasons for the confidence level.
 - **Monthly production:** ideal vs shaded (Altair grouped bars).
 - **Horizon chart:** 72-value profile with sun paths for 21 Jun and 21 Dec.
 - **Photo overlay:** roof (green), obstacles (red), confirmed vs check labels.
+- **"Varsayımlar ve kaynaklar" box (Demo-2 onwards):** a compact table under the results. Every number shown is tagged with one of:
+  - "Ölçüm/veri" (PVGIS, OSM, photo detection)
+  - "Kullanıcı girdisi"
+  - "Varsayım" (0.276, 0.85, SETBACK_M, tilt defaults, self-consumption range, CO2 factor)
+  - "Sonraki aşamada" (features not yet active)
+
+  Each row shows its source.
 - **Map layers:**
   - OSM (default)
   - satellite tiles (display only)
@@ -156,14 +203,14 @@ Always list the reasons for the confidence level.
   - demo buildings coloured by score
 
 ## 9. Output JSON (keys in Turkish, used by UI, agent and explainer)
-`bina_id, lat, lon, cati_tipi, goruntu_turu, toplam_cati_alani_m2, engel_orani, engel_alani_m2, kullanilabilir_alan_m2, kurulabilir_guc_kwp, ideal_uretim_kwh_kwp, golgeli_uretim_kwh_kwp, yillik_isinim_kwh_m2, istanbul_ort_kiyas_yuzde, sicaklik_kaybi_yuzde, golge_kaybi_yuzde, ana_golge_yonu, uygunluk_puani_yuzde, yillik_uretim_kwh, aylik_uretim_kwh[12], yillik_tasarruf_tl_aralik[2], co2_ton_yil, ufuk_cizgisi_72[72], yukseklik_kaynaklari{}, guven_seviyesi, guven_nedenleri[], tespitler[], yz_aciklama_raporu, yz_adimlari[]`
+`bina_id, lat, lon, cati_tipi, goruntu_turu, toplam_cati_alani_m2, engel_orani, engel_alani_m2, kullanilabilir_alan_m2, kurulabilir_guc_kwp, ideal_uretim_kwh_kwp, golgeli_uretim_kwh_kwp, yillik_isinim_kwh_m2, istanbul_ort_kiyas_yuzde, sicaklik_kaybi_yuzde, golge_kaybi_yuzde, ana_golge_yonu, uygunluk_puani_yuzde, yillik_uretim_kwh, aylik_uretim_kwh[12], yillik_tasarruf_tl_aralik[2], co2_ton_yil, ufuk_cizgisi_72[72], yukseklik_kaynaklari{}, panel_egimi_derece, panel_yonu_derece, yon_kaynagi, cati_yuzleri[], egim_senaryolari[], varsayimlar[], guven_seviyesi, guven_nedenleri[], tespitler[], yz_aciklama_raporu, yz_adimlari[]`
 
 ## 10. Stages and acceptance criteria
 | Stage | Target date | Scope | Done when |
 |---|---|---|---|
 | Day 0 | Fri 16 Oct | skeleton and map (step 1, local); GitHub + first Render deploy (step 2) | step 1: the map runs locally and the smoke test passes; step 2: the public Render URL shows the map |
-| Demo | Sat 17 Oct | manual roof area + roof type; photo (upload or demo) → Gemini perception + overlay; PVGIS ideal + terrain run; calc; metric cards; monthly chart; explanation | on the live URL, a demo image + area gives cards + explanation without errors |
-| Prototype | Mon 19 Oct | Overpass building + neighbours; horizon; shaded PVGIS run; shading heatmap; horizon chart; confidence; Istanbul reference; irradiation layer; 5 demo buildings | all 5 demo buildings give results; horizon unit test passes |
+| Demo | Sat 17 Oct | manual roof area + roof type; photo (upload or demo) → Gemini perception + overlay; PVGIS ideal + terrain run; calc; metric cards; monthly chart; "Varsayımlar ve kaynaklar" box; explanation | on the live URL, a demo image + area gives cards + explanation without errors |
+| Prototype | Mon 19 Oct | Overpass building + neighbours; roof area from OSM + geometric setback; roof orientation (user override → OSM tags → ridge estimate → optimal) with two-face PVGIS for pitched roofs and two tilt scenarios for flat roofs; horizon; shaded PVGIS run; shading heatmap; horizon chart; confidence; Istanbul reference; irradiation layer; 5 demo buildings | all 5 demo buildings give results; horizon, ridge and setback unit tests pass |
 | MVP | Tue 20 Oct | Roof Agent + "YZ'nin adımları"; yolo_service on Render + fusion; number check; run_scenario | agent logs ≥ 5 tool calls; app still works with the YOLO service off |
 | Freeze | Wed 21 Oct 18:00 | bug fixes only | screen recording done, texts written |
 
