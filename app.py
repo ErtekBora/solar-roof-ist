@@ -24,6 +24,7 @@ from core.config import (
     default_tariff,
     get_gemini_api_key,
 )
+from core.formatting import percent_from_ratio, tr_num
 from core.solar import SolarDataError, get_solar_yield
 from core.vision import (
     OBSTACLE_LABELS_TR,
@@ -52,12 +53,6 @@ def build_map():
     ).add_to(m)
     folium.LayerControl().add_to(m)
     return m
-
-
-def tr_num(value, decimals=0):
-    """Format with Turkish separators (1.234,5)."""
-    text = f"{value:,.{decimals}f}"
-    return text.replace(",", "X").replace(".", ",").replace("X", ".")
 
 
 def build_result(solar, lat, lon, area, roof_type, tariff, obstacle_ratio=None, image_view=None):
@@ -193,7 +188,7 @@ def assumption_rows(r, inputs, detection, explanation=None):
     if detection is not None:
         view = "Kuşbakışı" if detection["image_view"] == "top-down" else "Açılı"
         rows += [
-            ("Engel oranı", f"%{tr_num(r['engel_orani'] * 100, 1)}", "Ölçüm/veri", "Gemini fotoğraf analizi; tabloda işaretlediğiniz engeller"),
+            ("Engel oranı", f"%{tr_num(percent_from_ratio(r['engel_orani']), 1)}", "Ölçüm/veri", "Gemini fotoğraf analizi; tabloda işaretlediğiniz engeller"),
             ("Görüntü türü", view, "Ölçüm/veri", "Gemini fotoğraf analizi"),
             ("Kenar payı çarpanı", f"{EDGE_FACTOR}", "Varsayım", "Çatı kenarlarında panel konmayan şerit"),
         ]
@@ -271,7 +266,7 @@ def show_cards(r):
 
     if r["engel_orani"] is not None:
         c10, _, _ = st.columns(3)
-        c10.metric("Engel oranı", f"%{tr_num(r['engel_orani'] * 100, 1)}")
+        c10.metric("Engel oranı", f"%{tr_num(percent_from_ratio(r['engel_orani']), 1)}")
 
     with st.expander("Güven seviyesinin nedenleri", expanded=True):
         for reason in r["guven_nedenleri"]:

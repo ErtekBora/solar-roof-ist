@@ -363,3 +363,18 @@ def test_assumption_row_shows_active_explanation_source():
     assert "YZ yorumu (sayılar doğrulandı)" in set(gem["Durum"])
     assert "Şablon" in set(row("template")["Durum"])
     assert "YZ açıklaması" not in set(app.assumption_rows(r, _inputs(), None)["Değer"])
+
+
+def test_cards_and_explanation_payload_round_identically():
+    from core.formatting import percent_from_ratio, tr_num
+
+    solar = _fake_yield(41.0, 29.0)
+    r, _ = app.recompute(solar, _inputs(), _square_detection(), {0, 1})
+    r["yillik_isinim_kwh_m2"] = 1738.5  # a half: f-format would truncate it to 1.738
+    payload = explain.build_payload(r, _square_detection(), False)
+    for key, decimals in (("yillik_isinim_kwh_m2", 0), ("golgeli_uretim_kwh_kwp", 0), ("yillik_uretim_kwh", 0),
+                          ("sicaklik_kaybi_yuzde", 1), ("kurulabilir_guc_kwp", 1), ("kullanilabilir_alan_m2", 1),
+                          ("co2_ton_yil", 1), ("uygunluk_puani_yuzde", 1)):
+        assert tr_num(r[key], decimals) == tr_num(payload[key], decimals), key
+    assert tr_num(r["yillik_isinim_kwh_m2"]) == "1.739"
+    assert tr_num(percent_from_ratio(r["engel_orani"]), 1) == tr_num(payload["engel_orani"] * 100, 1)

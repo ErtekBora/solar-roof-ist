@@ -392,3 +392,9 @@ def test_overlay_line_width_and_font_scale_with_image_size(fake_gemini):
         x0 = round(0.2 * img.width)
         widths[side] = sum(1 for dx in range(0, 30) if img.getpixel((x0 + dx, y)) == (230, 30, 30))
     assert widths[3200] > widths[800]
+
+
+def test_prompt_labels_glazed_solar_heaters_not_skylights():
+    prompt = vision._prompt()
+    assert "glass-covered flat panels" in prompt and 'label them "solar panel", NOT "skylight"' in prompt
+    assert "window set flush into the roof surface" in prompt

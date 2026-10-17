@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from core import calc, config, explain
+from core.formatting import round_half_up
 from core.explain import (
     WARNING_LINE,
     build_fallback_explanation,
@@ -147,7 +148,7 @@ def test_payload_rounding():
     assert p["sicaklik_kaybi_yuzde"] == 6.5 and p["kurulabilir_guc_kwp"] == 14.3
     assert p["yillik_tasarruf_tl_aralik"] == [29361, 58723]  # 29361.x / 58723.x from the result, whole TL
     assert all(isinstance(v, int) for v in p["yillik_tasarruf_tl_aralik"])
-    assert explain._round(27.15, 1) == 27.2 and explain._round(1738.72, 0) == 1739
+    assert round_half_up(27.15, 1) == 27.2 and round_half_up(1738.72, 0) == 1739
     assert p["engel_orani"] == 0.272
 
 
@@ -171,6 +172,9 @@ def test_prompt_contains_the_required_rules():
     assert "su deposu, klima ve uydu çanağı" in prompt and "ASLA kaldırma veya taşıma önerme" in prompt
     assert "kWh/m², kWh/kWp, kWp" in prompt and "yazıyla açma" in prompt
     assert "AYRI bir cümle" in prompt and "Değerlendirici sıfat kullanma" in prompt and "fatura" in prompt and "tasarruf" in prompt
+    assert "Koşullu anlatım kullanma" in prompt and '"varsa"' in prompt
+    assert "kontrol edin" in prompt and "bakın" in prompt and "Dilbilgisi" in prompt
+    assert "adetleriyle adlandırarak" in prompt and "golgeli_uretim_kwh_kwp" in prompt
     assert WARNING_LINE in prompt
 
 
@@ -289,11 +293,33 @@ def test_template_verdict_is_factual_without_labels(result, detection):
     assert "yılda yaklaşık 1.370 kWh" in verdict and "14,3 kWp" in verdict and "güven: Düşük" in verdict
 
 
-def test_template_only_suggests_moving_relocatable_obstacles(result):
-    det = make_detection(("skylight", "chimney", "solar panel", "satellite dish", "water tank"))
+def test_template_names_relocatable_obstacles_with_counts_and_never_others(result):
+    det = make_detection(("skylight", "chimney", "solar panel", "satellite dish", "satellite dish", "water tank"))
     text = build_fallback_explanation(result, det, False)
-    assert "1 uydu çanağı, 1 su deposu" in text
+    assert "Çatıda 2 uydu çanağı, 1 su deposu var;" in text
     for blocked in ("çatı penceresi", "baca", "güneş paneli"):
         assert blocked not in text.lower()
-    only_fixed = build_fallback_explanation(result, make_detection(("skylight", "chimney")), False)
-    assert "taşınabilir engeller" not in only_fixed
+
+
+@pytest.mark.parametrize(
+    "labels, expected, absent",
+    [
+        (("skylight", "chimney"), "Bacaların çevresinde", "taşı"),
+        (("skylight", "solar panel"), "kurulum firmasından görüş alın", "Bacaların"),
+        ((), "kurulum firmasından görüş alın", "taşı"),
+    ],
+)
+def test_template_without_relocatable_obstacles_gives_another_recommendation(result, labels, expected, absent):
+    text = build_fallback_explanation(result, make_detection(labels), False)
+    recs = [ln for ln in text.splitlines() if ln.startswith("-")][3:]
+    assert len(recs) == 2 and expected in recs[1] and absent not in recs[1]
+    assert "taşınabilir" not in text
+
+
+@pytest.mark.parametrize("with_photo", [True, False])
+def test_template_has_no_conditional_phrasing(result, detection, with_photo):
+    det = detection if with_photo else None
+    text = build_fallback_explanation(result, det, False).lower()
+    import re
+
+    assert not re.search(r"varsa|olması durumunda|[ae]biliyorsa", text)  # "varsayıldı" is fine

@@ -139,7 +139,10 @@ def _prompt():
         'Label rules: "solar panel" means a dark, rectangular panel with a visible grid of cells, or a '
         "flat-plate solar water heater (often with a tank). Awnings, pergolas, terrace canopies, "
         'winter-garden roofs and glass shelters are "other", NOT "solar panel". A rooftop penthouse, '
-        'stair housing or elevator housing is "other".'
+        'stair housing or elevator housing is "other". '
+        "On pitched roofs, glass-covered flat panels (often tilted, sometimes with a cylindrical tank) are solar "
+        'water heaters: label them "solar panel", NOT "skylight". A skylight is a window set flush into the roof '
+        "surface."
     )
 
 

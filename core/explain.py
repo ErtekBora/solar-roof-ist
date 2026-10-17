@@ -11,6 +11,7 @@ import re
 from decimal import ROUND_HALF_UP, Decimal
 
 from core.config import EXPLAIN_MODEL, get_gemini_api_key
+from core.formatting import percent_from_ratio, round_half_up, tr_num
 
 WARNING_LINE = "⚠️ Kurulumdan önce çatının statik taşıma kapasitesini yetkili bir mühendise kontrol ettirin."
 
@@ -38,14 +39,17 @@ Girdi, hesaplanmış sonuçları içeren bir JSON'dur. Yanıtın TAM OLARAK şu 
    a) bu konumdaki yıllık ışınım ve özgül verim;
    b) engel oranı ve kullanılabilir alan. "Ortalama orana göre varsayım" ifadesini YALNIZCA fotograf_var false ise kullan; fotograf_var true ise alanın fotoğraftan ölçüldüğünü söyle;
    c) arazi gölgesi, sıcaklık kaybı veya güven seviyesi.
-3) "-" ile başlayan 2 pratik öneri (ör. fotoğraf açılıysa veya yoksa kuşbakışı fotoğraf deneyin; engel_sayilari içinde su deposu, klima veya uydu çanağı varsa onları başka yere almanın mümkün olup olmadığına bakın).
+3) "-" ile başlayan 2 pratik öneri (ör. fotoğraf açılıysa veya yoksa kuşbakışı fotoğraf deneyin; yalnızca engel_sayilari gerçekten su deposu, klima veya uydu çanağı içeriyorsa onları adetleriyle adlandırarak ("2 uydu çanağı") başka yere taşımayı öner; içermiyorsa taşıma önerme, bunun yerine başka yararlı bir öneri ver: kuşbakışı fotoğraf deneyin veya bacalar varsa çevrelerindeki boşluğu bir kurulum firmasına kontrol ettirin).
 4) Son satır AYNEN şu olsun: {WARNING_LINE}
 
 Kesin kurallar:
 - YALNIZCA girdideki sayıları kullan. Geri ödeme süresi, panel adedi, maliyet, teşvik, kredi koşulu veya girdide olmayan hiçbir yüzdeyi hesaplama ya da uydurma. Sayıları değiştirme, yeniden toplama veya bölme.
 - Şu sözcükleri hiç kullanma: amorti, geri ödeme, geri dönüş süresi, maliyet, yatırım, teşvik, kredi, taksit, fatura, kazanç süresi. Parasal kazancı anlatırken "tasarruf" de.
 - "uygunluk_puani_yuzde" YALNIZCA arazi (tepe) gölgesini yansıtır. Onu sadece "arazi gölgesi açısından" diyerek an; asla genel uygunluk hükmü olarak kullanma. Genel hükmü özgül verim, kullanılabilir alan / kWp ve güven seviyesine dayandır.
-- Yalnızca su deposu, klima ve uydu çanağı başka yere taşınabilir. Çatı penceresi, baca, çatı katı / çatıdaki yapılar ve mevcut güneş panelleri için ASLA kaldırma veya taşıma önerme; bunlardan hiç söz etme (ne öneri ne uyarı olarak).
+- Yalnızca su deposu, klima ve uydu çanağı başka yere taşınabilir. Çatı penceresi, baca, çatı katı / çatıdaki yapılar ve mevcut güneş panelleri için ASLA kaldırma veya taşıma önerme; bunlardan söz etme (tek istisna: engel_sayilari içinde baca varsa, çevresindeki boşluğu kurulum firmasına kontrol ettirmeyi önerebilirsin).
+- Koşullu anlatım kullanma ("varsa", "olması durumunda", "-abiliyorsa" gibi). Öneriyi kesin cümleyle yaz.
+- Dilbilgisi açısından doğru Türkçe yaz. "Check" karşılığı emir kipi "kontrol edin" veya "bakın"dır ("kontrol et", "kontrol etmeyi deneyin" yazma).
+- "Özgül verim" derken HER ZAMAN golgeli_uretim_kwh_kwp değerini kullan (ideal_uretim_kwh_kwp değil).
 - Komşu bina gölgesi ve İstanbul ortalamasıyla karşılaştırma hakkında iddiada bulunma; bunlar "sonraki aşamada" eklenecek diyebilirsin.
 - demo_photo true ise, fotoğrafın örnek olduğunu ve kullanıcının kendi çatısı olmadığını BİR KEZ, ilk satırda hüküm cümlesinden sonra, noktayla ayrılmış AYRI bir cümle olarak söyle (noktalı virgülle bağlama).
 - Birimleri sembolle yaz: kWh/m², kWh/kWp, kWp, kWh, m², %. Birimleri yazıyla açma ("kilovatsaat", "metrekare", "yüzde" yazma).
@@ -62,13 +66,6 @@ def clear_cache():
 
 # --------------------------------------------------------------------- payload
 
-def _round(value, decimals):
-    """Round half up on the decimal repr (27.15 -> 27.2); returns int when decimals == 0."""
-    q = Decimal(1).scaleb(-decimals)
-    rounded = Decimal(str(value)).quantize(q, ROUND_HALF_UP)
-    return int(rounded) if decimals == 0 else float(rounded)
-
-
 def build_payload(result, detection=None, demo_photo=False):
     """Compact, rounded payload for the model; the same dict is used for validation.
 
@@ -81,14 +78,14 @@ def build_payload(result, detection=None, demo_photo=False):
             payload[key] = result[key]
     for key in _INT_KEYS:
         if result.get(key) is not None:
-            payload[key] = _round(result[key], 0)
+            payload[key] = round_half_up(result[key], 0)
     for key in _ONE_DECIMAL_KEYS:
         if result.get(key) is not None:
-            payload[key] = _round(result[key], 1)
+            payload[key] = round_half_up(result[key], 1)
     if result.get("engel_orani") is not None:
-        payload["engel_orani"] = _round(result["engel_orani"], 3)
+        payload["engel_orani"] = round_half_up(result["engel_orani"], 3)
     if result.get("yillik_tasarruf_tl_aralik") is not None:
-        payload["yillik_tasarruf_tl_aralik"] = [_round(v, 0) for v in result["yillik_tasarruf_tl_aralik"]]
+        payload["yillik_tasarruf_tl_aralik"] = [round_half_up(v, 0) for v in result["yillik_tasarruf_tl_aralik"]]
     payload["fotograf_var"] = detection is not None
     payload["demo_photo"] = bool(demo_photo) and detection is not None
     if detection is not None:
@@ -213,11 +210,6 @@ def validate_explanation_numbers(text, payload):
 
 # -------------------------------------------------------------------- template
 
-def _tr(value, decimals=0):
-    """Turkish number format: 1.234,5."""
-    return f"{value:,.{decimals}f}".replace(",", "X").replace(".", ",").replace("X", ".")
-
-
 def _relocatable_phrase(payload):
     parts = [f"{n} {label.lower()}" for label, n in payload.get("engel_sayilari", {}).items() if label in _RELOCATABLE_LABELS]
     return ", ".join(parts)
@@ -227,28 +219,28 @@ def build_fallback_explanation(result, detection=None, demo_photo=False):
     """Deterministic Turkish template with the same 4 sections; only payload numbers, no qualitative verdict."""
     p = build_payload(result, detection, demo_photo)
     verdict = (
-        f"Bu konumda her kWp panel yılda yaklaşık {_tr(p['golgeli_uretim_kwh_kwp'])} kWh üretir; "
-        f"çatınıza yaklaşık {_tr(p['kurulabilir_guc_kwp'], 1)} kWp sığabilir (güven: {p['guven_seviyesi']})."
+        f"Bu konumda her kWp panel yılda yaklaşık {tr_num(p['golgeli_uretim_kwh_kwp'])} kWh üretir; "
+        f"çatınıza yaklaşık {tr_num(p['kurulabilir_guc_kwp'], 1)} kWp sığabilir (güven: {p['guven_seviyesi']})."
     )
     if p["demo_photo"]:
         verdict += " Gösterilen fotoğraf örnektir, sizin çatınız değildir."
 
     if p["fotograf_var"] and p.get("engel_orani") is not None:
         area_line = (
-            f"- Fotoğrafa göre çatının %{_tr(p['engel_orani'] * 100, 1)} kadarı engellerle kaplı; "
-            f"{_tr(p['toplam_cati_alani_m2'], 1)} m² çatıdan {_tr(p['kullanilabilir_alan_m2'], 1)} m² kullanılabilir."
+            f"- Fotoğrafa göre çatının %{tr_num(percent_from_ratio(p['engel_orani']), 1)} kadarı engellerle kaplı; "
+            f"{tr_num(p['toplam_cati_alani_m2'], 1)} m² çatıdan {tr_num(p['kullanilabilir_alan_m2'], 1)} m² kullanılabilir."
         )
     else:
         area_line = (
             f"- Fotoğraf olmadığı için kullanılabilir alan ortalama orana göre varsayıldı: "
-            f"{_tr(p['toplam_cati_alani_m2'], 1)} m² çatıdan {_tr(p['kullanilabilir_alan_m2'], 1)} m²."
+            f"{tr_num(p['toplam_cati_alani_m2'], 1)} m² çatıdan {tr_num(p['kullanilabilir_alan_m2'], 1)} m²."
         )
     bullets = [
-        f"- Bu konumda yıllık ışınım {_tr(p['yillik_isinim_kwh_m2'])} kWh/m²; panel başına özgül verim "
-        f"{_tr(p['golgeli_uretim_kwh_kwp'])} kWh/kWp.",
+        f"- Bu konumda yıllık ışınım {tr_num(p['yillik_isinim_kwh_m2'])} kWh/m²; panel başına özgül verim "
+        f"{tr_num(p['golgeli_uretim_kwh_kwp'])} kWh/kWp.",
         area_line,
-        f"- Arazi gölgesi açısından uygunluk %{_tr(p['uygunluk_puani_yuzde'], 1)}, sıcaklık kaybı "
-        f"%{_tr(p['sicaklik_kaybi_yuzde'], 1)}; güven seviyesi {p['guven_seviyesi']}.",
+        f"- Arazi gölgesi açısından uygunluk %{tr_num(p['uygunluk_puani_yuzde'], 1)}, sıcaklık kaybı "
+        f"%{tr_num(p['sicaklik_kaybi_yuzde'], 1)}; güven seviyesi {p['guven_seviyesi']}.",
     ]
 
     if p.get("goruntu_turu") != "top-down":
@@ -257,9 +249,11 @@ def build_fallback_explanation(result, detection=None, demo_photo=False):
         photo_tip = "- Engel tablosunu kontrol edin; çatıda olmayan engellerin işaretini kaldırarak sonucu güncelleyin."
     relocatable = _relocatable_phrase(p)
     if relocatable:
-        tip2 = f"- Çatıdaki taşınabilir engeller ({relocatable}) başka yere alınabiliyorsa kullanılabilir alan artabilir."
+        tip2 = f"- Çatıda {relocatable} var; bunları başka bir yere taşımanın mümkün olup olmadığına bakın, kullanılabilir alan artar."
+    elif "Baca" in p.get("engel_sayilari", {}):
+        tip2 = "- Bacaların çevresinde panel için yeterli boşluk kalıp kalmadığını bir kurulum firmasına kontrol ettirin."
     else:
-        tip2 = "- Komşu bina gölgesi sonraki aşamada eklenecek; şimdilik yalnızca arazi gölgesi hesaba katıldı."
+        tip2 = "- Çatıda yerinde ölçüm ve gölge kontrolü için bir kurulum firmasından görüş alın; komşu bina gölgesi sonraki aşamada eklenecek."
     return "\n".join([verdict, *bullets, photo_tip, tip2, WARNING_LINE])
 
 
@@ -286,7 +280,7 @@ def _generate(client, payload, hint=None):
 def _retry_hint(invalid):
     if not invalid:
         return "Önceki yanıt boştu. Kurallara uyarak yanıtı yeniden yaz."
-    numbers = ", ".join(_tr(v, 0 if float(v).is_integer() else 2) for v in invalid)
+    numbers = ", ".join(tr_num(v, 0 if float(v).is_integer() else 2) for v in invalid)
     return (
         f"Önceki yanıtta girdide bulunmayan veya yasak bağlamda geçen şu sayılar vardı: {numbers}. "
         "Bu sayıları kaldır; yalnızca girdideki sayıları, olduğu gibi kullan."
