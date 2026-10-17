@@ -18,6 +18,11 @@ MAP_ZOOM = 12
 # TODO: set from EPDK before demo
 TARIFF_TL_PER_KWH = 0.0
 
+
+def default_tariff():
+    """Return the configured tariff, or None while it is still the placeholder."""
+    return TARIFF_TL_PER_KWH if TARIFF_TL_PER_KWH > 0 else None
+
 # TODO: verify current model IDs in the Gemini API docs
 VISION_MODEL = "TODO-flash-model-id"
 AGENT_MODEL = "TODO-flash-model-id"
