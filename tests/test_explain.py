@@ -19,9 +19,9 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def make_result():
-    r = calc.compute_capacity(150.0, 0.2715, "flat", 1372.68, 1369.8, 3.0, image_view="oblique")
+    r = calc.compute_capacity(150.0, 0.2715, "flat", 1372.68, 1369.8, image_view="oblique")
     r.update(
-        lat=41.015, lon=28.979, tarife_tl_kwh=3.0, yillik_isinim_kwh_m2=1738.72, sicaklik_kaybi_yuzde=6.49,
+        lat=41.015, lon=28.979, yillik_isinim_kwh_m2=1738.72, sicaklik_kaybi_yuzde=6.49,
         panel_egim_derece=33, panel_yon_derece=8, ufuk_cizgisi_72=[0.0] * 72,
         aylik_uretim_kwh=[1.0] * 12, aylik_ideal_kwh=[1.0] * 12,
     )
@@ -110,7 +110,17 @@ def test_forbidden_payback_sentence_fails_even_when_number_matches():
     p = {"sicaklik_kaybi_yuzde": 6.3}
     assert validate_explanation_numbers("Yatırım 6 yılda kendini amorti eder", p) == (False, [6.0])
     assert validate_explanation_numbers("Yaklaşık 6 yıl içinde geri döner", p) == (False, [6.0])
-    assert validate_explanation_numbers("Faturanızda %6 azalma olur", p)[0] is False
+    # "fatura" is no longer a forbidden word: a bill sentence is judged by its numbers only
+    assert validate_explanation_numbers("Faturanızda %6 azalma olur", p)[0] is True
+    assert validate_explanation_numbers("Faturanızda %7 azalma olur", p)[0] is False
+
+
+def test_bill_coverage_sentence_needs_payload_numbers():
+    p = {"fatura_karsilama_yuzde_aralik": [60, 85], "fatura_tl_ay": 1500}
+    assert validate_explanation_numbers("Faturanızın %60–%85'ini karşılar.", p) == (True, [])
+    assert validate_explanation_numbers("Faturanızın %60–%85'ini karşılar.", {"co2_ton_yil": 12.4})[0] is False
+    assert validate_explanation_numbers("Faturanızın %60–%90'ını karşılar.", p) == (False, [90.0])
+    assert validate_explanation_numbers("Aylık 1.500 TL faturanız var.", p) == (True, [])
 
 
 def test_forbidden_panel_count_fails():
@@ -146,10 +156,33 @@ def test_payload_rounding():
     assert p["yillik_isinim_kwh_m2"] == 1739 and isinstance(p["yillik_isinim_kwh_m2"], int)
     assert p["golgeli_uretim_kwh_kwp"] == 1370 and isinstance(p["yillik_uretim_kwh"], int)
     assert p["sicaklik_kaybi_yuzde"] == 6.5 and p["kurulabilir_guc_kwp"] == 14.3
-    assert p["yillik_tasarruf_tl_aralik"] == [29361, 58723]  # 29361.x / 58723.x from the result, whole TL
+    assert p["yillik_tasarruf_tl_aralik"] == [35996, 106564]  # fallback range 35995.9 / 106563.63, whole TL
     assert all(isinstance(v, int) for v in p["yillik_tasarruf_tl_aralik"])
     assert round_half_up(27.15, 1) == 27.2 and round_half_up(1738.72, 0) == 1739
     assert p["engel_orani"] == 0.272
+
+
+def test_payload_without_bill_has_tariff_and_method_but_no_coverage(result):
+    p = build_payload(result, None, False)
+    assert p["tasarruf_yontemi"] == "genis_tahmin"
+    assert p["tarife_dusuk_tl_kwh"] == 3.68 and p["tarife_yuksek_tl_kwh"] == 5.44
+    assert "fatura_karsilama_yuzde_aralik" not in p and "tarife_tl_kwh" not in p
+
+
+def test_payload_with_bill_carries_coverage_and_self_use():
+    r = calc.compute_capacity(150.0, 0.2715, "flat", 1372.68, 1369.8, 1500, image_view="oblique")
+    p = build_payload(r, None, False)
+    assert p["tasarruf_yontemi"] == "fatura" and p["fatura_tl_ay"] == 1500
+    assert p["fatura_karsilama_yuzde_aralik"] == [100, 100] and p["kendi_kullanim_orani_yuzde"] == 22
+    assert p["tuketim_kwh_ay"] == 353
+    text = "Faturanızın %100 kadarını karşılar; üretimin %22 kadarı dairenizde kullanılır."
+    assert validate_explanation_numbers(text, p) == (True, [])
+
+
+def test_forbidden_words_no_longer_include_fatura_but_keep_payback_terms():
+    assert "fatura" not in explain.FINANCIAL_TERMS and "amorti" in explain.FINANCIAL_TERMS
+    assert "geri ödeme" in explain.FINANCIAL_TERMS
+    assert "kredi, taksit, fatura" not in explain.SYSTEM_PROMPT
 
 
 def test_payload_strips_large_fields_and_counts_obstacles(payload):
@@ -171,7 +204,7 @@ def test_prompt_contains_the_required_rules():
     assert "arazi gölgesi açısından" in prompt and "asla genel uygunluk hükmü" in prompt
     assert "su deposu, klima ve uydu çanağı" in prompt and "ASLA kaldırma veya taşıma önerme" in prompt
     assert "kWh/m², kWh/kWp, kWp" in prompt and "yazıyla açma" in prompt
-    assert "AYRI bir cümle" in prompt and "Değerlendirici sıfat kullanma" in prompt and "fatura" in prompt and "tasarruf" in prompt
+    assert "AYRI bir cümle" in prompt and "Değerlendirici sıfat kullanma" in prompt and "tasarruf" in prompt
     assert "Koşullu anlatım kullanma" in prompt and '"varsa"' in prompt
     assert "kontrol edin" in prompt and "bakın" in prompt and "Dilbilgisi" in prompt
     assert "adetleriyle adlandırarak" in prompt and "golgeli_uretim_kwh_kwp" in prompt

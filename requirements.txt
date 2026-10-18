@@ -7,6 +7,7 @@ pyproj==3.7.2
 pvlib==0.16.1
 pandas==3.0.6
 numpy==2.4.6
+pyarrow==26.0.0
 pillow==12.3.0
 google-genai==2.31.0
 pytest==9.1.1

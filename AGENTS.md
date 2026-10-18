@@ -20,14 +20,14 @@ Solo developer. Principle: **narrow but working beats feature-rich but broken.**
 ## Working style (mandatory)
 1. **Plan first.** Before writing code, show a short plan (files to create or change, functions, tests) and WAIT for approval.
 2. **One task at a time.** Only touch files the current task needs.
-3. **Tests for every module.** Use pytest. Tests must run WITHOUT network: mock all HTTP (PVGIS, Overpass, YOLO service) and all Gemini calls.
+3. **Tests for every module.** Use pytest. Tests must run WITHOUT network: mock all HTTP (PVGIS, YOLO service) and all Gemini calls.
 4. **Finish every task with a walkthrough:**
    - what changed
    - how to run it
    - test results
    - what is real vs placeholder
 5. **No extra features.** Build nothing beyond the current stage in SPEC.md. If something is unclear, ask.
-6. **Never guess API parameters.** Check the official docs (PVGIS, Overpass, google-genai, Ultralytics, Render) and cite the doc page in the plan.
+6. **Never guess API parameters.** Check the official docs (PVGIS, pyarrow, shapely, google-genai, Ultralytics, Render) and cite the doc page in the plan.
 
 ## Tech stack
 - Python 3.11
@@ -38,7 +38,8 @@ Solo developer. Principle: **narrow but working beats feature-rich but broken.**
 - Tests: pytest
 - Pin exact versions (`==`) in requirements.txt.
 - **Do NOT use** osmnx, geopandas, torch or any local ML model in the main app. They are too heavy for free hosting (~512 MB RAM).
-  - Query OpenStreetMap directly through the Overpass API with requests.
+  - Buildings come from the local Overture extract `data/buildings/*.parquet`, read with pyarrow (already a Streamlit dependency). The app only reads the precomputed `height_ml_m` column; do NOT add lightgbm, overturemaps, duckdb or geopandas.
+  - Overpass is only a possible future refresh source; the app does not call it.
   - Use shapely + pyproj for geometry.
 - YOLO runs ONLY in the separate `yolo_service/` (FastAPI + onnxruntime, no torch).
 - Model preparation and validation notebooks run on **Kaggle** (torch and ultralytics are allowed there).
@@ -47,7 +48,7 @@ Solo developer. Principle: **narrow but working beats feature-rich but broken.**
 ```
 app.py                    Streamlit UI (Turkish)
 core/config.py            constants, model names, get_gemini_api_key(), get_yolo_url()
-core/buildings.py         Overpass query, target building + neighbours, height rule
+core/buildings.py         local Overture buildings (GeoParquet), click lookup, neighbours, height rule
 core/horizon.py           72-value horizon from neighbours (+ terrain), main shading direction
 core/solar.py             PVGIS PVcalc + printhorizon, caching, retries
 core/vision.py            Gemini roof perception (surface, obstacles, roof type, image view)
@@ -61,6 +62,7 @@ yolo_service/             FastAPI app: POST /detect, GET /health, model/*.onnx
 scripts/                  one-off scripts (e.g. build_istanbul_reference.py)
 notebooks/                Kaggle notebooks (ONNX export, validation, solar atlas crop)
 data/demo_images/         real roof photos + SOURCES.md (source, author, license, link)
+data/buildings/             Overture extract with ML height + height_model_report.json
 data/                     demo_buildings.json, istanbul_reference.json, istanbul_gti layer
 tests/                    pytest, one test file per module
 ```
@@ -74,17 +76,19 @@ tests/                    pytest, one test file per module
   - cached with `st.cache_data` (or an in-module cache for non-UI code)
   - retry on HTTP 429/529 up to 3 times with 1/2/4 s backoff
   - max 30 requests/second
-- **Overpass calls:**
-  - send a descriptive User-Agent
-  - use a cache and a timeout
-  - use a fallback endpoint if the main one fails
+- **Building data:**
+  - the file is loaded lazily on first use (never at import time); a missing or unreadable file returns None and the UI falls back to the manual area
+  - all footprints are projected once to EPSG:32635 at load time and indexed with a shapely STRtree; per click only the clicked point is projected
+  - the prototype covers only Erenköy / Suadiye / Göztepe (`BUILDINGS_BBOX`); outside it the status is `kapsam_disi`, never confused with `bina_bulunamadi`
 - **Building height rule, always in this order:**
-  1. `height` tag
-  2. `building:levels` × 3 m
-  3. median of known neighbour heights
-  4. 15 m default
+  1. `"user"`: floors typed by the user × 3 m (target building only)
+  2. `"height_tag"`: `height`
+  3. `"levels_tag"`: `num_floors` × 3 m
+  4. `"ml_estimate"`: `height_ml_m` (LightGBM estimate, precomputed on Kaggle)
+  5. `"neighbour_median"`: median of known neighbour heights within 150 m (known = height or num_floors only, never estimates)
+  6. `"default"`: median of all known heights in the loaded file (`FALLBACK_HEIGHT_M` = 15 m only when the file has none)
 
-  Always record the source of each height as one of: `"height_tag"`, `"levels_tag"`, `"neighbour_median"`, `"default"`.
+  Always record the source of each height as one of these six labels.
 - **Secrets:**
   - The API key is read only through `core/config.get_gemini_api_key()`: env var `GEMINI_API_KEY` first, then `st.secrets["GEMINI_API_KEY"]`.
   - Wrap the `st.secrets` access in try/except: Streamlit raises an error when no secrets file exists (e.g. on Render, where only env vars are used).
@@ -92,13 +96,13 @@ tests/                    pytest, one test file per module
   - Never log, print or display the key.
   - `.streamlit/secrets.toml` must be in .gitignore.
 - **Privacy (KVKK):** uploaded images are processed in memory only and never written to disk. Store no personal data.
-- **Attribution:** always show "© OpenStreetMap katkıcıları · Güneş verisi: PVGIS (JRC)". Demo images show their source and license.
+- **Attribution:** always show "© OpenStreetMap katkıcıları · Bina verisi: Overture Maps Foundation (ODbL), Microsoft ML Buildings · Güneş verisi: PVGIS (JRC)". Demo images show their source and license.
 - **No Google Maps / Google Earth imagery** anywhere in the AI pipeline (Terms of Service). Satellite tiles on the map are for display only.
-- **Numbers never come from an LLM.** Tariff, CO2 factor and all results come from config or tools.
+- **Numbers never come from an LLM.** Tariff, CO2 factor and all results come from config or tools. Savings use the EPDK two-tier tariff in `core/calc.py` (bill-based when the user gives a monthly bill, a wide fallback range otherwise).
 - **Language:** UI text in Turkish. Code, comments, docstrings and commit messages in English.
 - **Licensing:** Ultralytics (YOLOE) is AGPL-3.0, so the GitHub repo stays public. Keep a LICENSE file and credit all data sources in README.
 - **Robustness:**
-  - The app must never crash because an optional part failed (YOLO service, Gemini, Overpass).
+  - The app must never crash because an optional part failed (YOLO service, Gemini, building data).
   - Degrade gracefully, lower the confidence and explain why in Turkish.
 
 ## AI architecture (core of the solution)

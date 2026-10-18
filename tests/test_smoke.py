@@ -21,11 +21,11 @@ def test_config_constants():
     assert config.EDGE_FACTOR == 0.85
     assert config.M2_PER_KWP_FLAT == 6.5
     assert config.M2_PER_KWP_PITCHED == 5.5
-    assert config.DEFAULT_HEIGHT_M == 15
+    assert config.FALLBACK_HEIGHT_M == 15.0
     assert config.LEVEL_HEIGHT_M == 3
     assert config.PVGIS_LOSS == 14
-    assert config.MAP_CENTER == (41.015, 28.979)
-    assert config.MAP_ZOOM == 12
+    assert config.MAP_CENTER == (40.9720, 29.0760)
+    assert config.MAP_ZOOM == 15
 
 
 class _Secrets(dict):

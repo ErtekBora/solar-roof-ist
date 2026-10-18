@@ -20,12 +20,12 @@ streamlit run app.py
 
 ## Data sources and licenses
 
-- Building data: © OpenStreetMap contributors, ODbL (via Overpass API)
+- Building data: © OpenStreetMap contributors and Microsoft ML Buildings, ODbL, via Overture Maps Foundation; building heights without a tag are an ML estimate (LightGBM trained on this data, no GlobalBuildingAtlas data)
 - Solar data: PVGIS v5.3, European Commission JRC
 - Satellite map tiles (display only): Esri World Imagery
 - Roof photo demo set: Roboflow rooftop1 (CC BY 4.0), RID / TUM (research use), Wikimedia Commons (CC licenses); each file is listed in `data/demo_images/SOURCES.md`
 - Irradiation layer: Global Solar Atlas (CC BY 4.0)
-- CO2 factor: ETKB TUESEF 2021; usable-area ratio: Ember; tariff: EPDK
+- CO2 factor: ETKB TUESEF 2021; usable-area ratio: Ember; tariff: EPDK (AG tek terim mesken, 2026-04-04)
 
 ## License
 

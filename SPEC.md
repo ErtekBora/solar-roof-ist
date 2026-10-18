@@ -6,10 +6,10 @@ Istanbul has a large rooftop solar potential that is almost unused. The main bar
 Objective: given a building in Istanbul (and optionally a roof photo), produce a trustworthy, explainable suitability assessment in seconds, using only open data and AI. No physical data collection.
 
 ## 2. User flow
-1. User opens the app and sees a map of Istanbul (center 41.015, 28.979, zoom 12).
+1. User opens the app and sees a map of Istanbul (centre 40.9720, 29.0760, zoom 15, with the covered Erenköy / Suadiye / Göztepe area outlined).
 2. User clicks a building (Prototype+) or a location plus a manual roof area (Demo).
 3. Optional: the user uploads a roof photo or picks a demo image from `data/demo_images/`.
-4. Optional: the user adjusts the electricity tariff (TL/kWh) and roof type override.
+4. Optional: the user picks the roof type (Düz / Eğimli / Bilmiyorum), the number of floors, and enters an approximate monthly electricity bill (TL).
 5. The app shows:
    - result cards: score, kWp, kWh, TL range, CO2, confidence
    - detection overlay on the photo
@@ -20,7 +20,7 @@ Objective: given a building in Istanbul (and optionally a roof photo), produce a
 ## 3. Data sources (open data only)
 | Data | Source | Notes |
 |---|---|---|
-| Building footprints, `height`, `building:levels` | OpenStreetMap via Overpass API | ODbL, attribution required |
+| Building footprints, `height`, `num_floors`, `height_ml_m` | Local Overture Maps extract `data/buildings/erenkoy_suadiye_goztepe_ml.parquet` (OpenStreetMap + Microsoft ML Buildings), ML height added on Kaggle | ODbL, attribution required; Prototype covers lon 29.050–29.100, lat 40.950–40.990 only |
 | Production, irradiation, losses | PVGIS v5.3 `PVcalc` | JRC, free, server-side |
 | Terrain horizon | PVGIS `printhorizon` | resampled to 72 values |
 | Sun position, clear-sky irradiance | pvlib (local) | Haurwitz clear-sky model (zenith only) |
@@ -28,7 +28,7 @@ Objective: given a building in Istanbul (and optionally a roof photo), produce a
 | City irradiation layer | Global Solar Atlas GTI/GHI GeoTIFF (CC BY 4.0), cropped to Istanbul on Kaggle and exported as PNG + bounds JSON | display layer only |
 | Istanbul reference yield | `scripts/build_istanbul_reference.py`: PVGIS optimal at Fatih, Kadıköy, Beşiktaş, Bakırköy, Üsküdar → mean saved to `data/istanbul_reference.json` | never hard-code an invented value |
 | CO2 factor | ETKB TUESEF 2021, 0.6345 tCO2/MWh | config constant |
-| Tariff | EPDK residential tariff | config default set by the developer, editable in the UI |
+| Tariff | EPDK AG tek terim mesken, yürürlük 2026-04-04 (`TARIFF_SOURCE`) | config constants, two tiers; the user gives a monthly bill instead of a tariff |
 | Usable area ratio without photo | Ember: 0.276 | config constant |
 
 ## 4. External APIs
@@ -56,12 +56,14 @@ Objective: given a building in Istanbul (and optionally a roof photo), produce a
   - Confirm the convention against one real `printhorizon` response before coding (e.g. a hill known to be on one side).
   - Add a unit test: PVGIS azimuth 0 → index 36 (South), -90 → index 18 (East), 90 → index 54 (West).
 
-### Overpass
-- Endpoint: `https://overpass-api.de/api/interpreter` (POST)
-- Fallback: `https://overpass.kumi.systems/api/interpreter`
-- Query: `[out:json][timeout:25]; ( way["building"](around:150,{lat},{lon}); relation["building"](around:150,{lat},{lon}); ); out geom tags;`
-- Ways become polygons directly. For multipolygon relations, build the polygon from the `outer` members. Skip anything that is not a valid polygon.
-- Target building = the polygon containing the click point; if none, the nearest polygon within 20 m; otherwise "bina bulunamadı" (ask for manual area).
+### Buildings (local Overture extract; Overpass is only a possible future refresh source)
+- Public Overpass servers repeatedly answered "502 at capacity", so the app does not depend on them.
+- Loading: `pyarrow.parquet.read_table` on first use (columns id, geometry, height, num_floors, height_ml_m, is_underground, class, sources); a missing or unreadable file returns None and the UI uses the manual area.
+- Cleaning at load: WKB decoded, underground and empty geometries skipped, invalid ones repaired with `buffer(0)`, a MultiPolygon reduced to its largest part, everything projected once to EPSG:32635, parts under 1 m² dropped. Built into a shapely STRtree.
+- Lookup `find_building(index, lat, lon)`: outside the bbox → `kapsam_disi`; inside a footprint → that building; else the nearest footprint within 15 m; else `bina_bulunamadi`. Overlapping footprints: prefer `OpenStreetMap`, then the largest area (same tie-break for equal distances).
+- Neighbours: all footprints within 150 m (metric) of the target.
+- Height rule and source labels: see AGENTS.md. `roof_shape`, `roof_direction` and `roof_material` are ignored (almost empty; in Overture `roof_direction` is the ridge bearing, not a facing direction).
+- Model card: parquet schema metadata key `height_ml` (bytes), else `data/buildings/height_model_report.json`, else None (the UI then omits the MAE sentence).
 
 ### Gemini API (google-genai)
 - `client = genai.Client(api_key=get_gemini_api_key())`
@@ -78,11 +80,11 @@ Objective: given a building in Istanbul (and optionally a roof photo), produce a
 ## 5. Tools (pure functions in core/, each unit-tested)
 | Tool | Signature (indicative) | Returns |
 |---|---|---|
-| get_building | `get_building(lat, lon, radius_m=150)` | target `{id, polygon, area_m2, height_m, height_source}` + `neighbours[]` with the same fields and `distance_m` |
+| get_building | `find_building(index, lat, lon)` | `{status, message, building: {id, polygon, area_m2, setback_polygons, setback_area_m2, height_m, height_source, data_source}, neighbours[] with distance_m}` |
 | compute_horizon | `compute_horizon(target, neighbours, terrain72=None)` | `{horizon72, main_shading_direction, max_angle_deg}` |
 | get_solar_yield | `get_solar_yield(lat, lon, horizon72=None)` | `{ideal: {...}, shaded: {...}, angle, aspect}` |
 | detect_roof_objects | `detect_roof_objects(image_bytes)` | `{roof_type, image_view, roof_area_px, obstacles[], obstacle_ratio, sources: [gemini, yolo]}` |
-| compute_capacity | `compute_capacity(roof_area_m2, obstacle_ratio, roof_type, yield_ideal, yield_shaded, tariff)` | all result numbers (section 6) |
+| compute_capacity | `compute_capacity(roof_area_m2, obstacle_ratio, roof_type, yield_ideal, yield_shaded, monthly_bill_tl=None, image_view=None, monthly_ideal=None, monthly_shaded=None, usable_base_area_m2=None, roof_type_known=True)` | all result numbers (section 6) |
 | run_scenario | `run_scenario(base_result, change)`, e.g. "move water tanks" → obstacle_ratio reduced | new numbers + delta |
 | optimize_layout | `optimize_layout(usable_polygon_m, scenario, exclusion_zones_m=None)` | `{panel_count, kwp, panels: [rectangles], tilt, azimuth, row_pitch_m, coverage_ratio}` |
 
@@ -119,7 +121,7 @@ Objective: given a building in Istanbul (and optionally a roof photo), produce a
 - Unit test: a neighbour 30 m due west and 15 m taller → 26.57° in the West bin.
 
 **Roof geometry and panel orientation (Prototype):**
-- **Roof area** comes from the OSM footprint (in EPSG:32635), replacing the manual input. Manual input remains as a fallback when no building is found.
+- **Roof area** comes from the building footprint (Overture/OSM, in EPSG:32635), replacing the manual input. Manual input remains as a fallback when no building is found.
 - **Geometric edge setback:**
   - instead of the constant EDGE_FACTOR, shrink the footprint inward by `SETBACK_M` (config, default 1.0 m, an explicit assumption): `usable_polygon = footprint.buffer(-SETBACK_M)`
   - if the result is empty (very small roof), usable area = 0, with a Turkish reason
@@ -152,8 +154,8 @@ Objective: given a building in Istanbul (and optionally a roof photo), produce a
 ## 6. Calculations
 | Quantity | Formula |
 |---|---|
-| Usable area (OSM polygon + photo, Prototype+) | area(footprint.buffer(−SETBACK_M)) × (1 − obstacle_ratio) |
-| Usable area (OSM polygon, no photo) | area(footprint.buffer(−SETBACK_M)) × (0.276 ÷ 0.85), labelled "ortalama varsayım" |
+| Usable area (building polygon + photo, Prototype+) | area(footprint.buffer(−SETBACK_M)) × (1 − obstacle_ratio) |
+| Usable area (building polygon, no photo) | area(footprint.buffer(−SETBACK_M)) × (0.276 ÷ 0.85), labelled "ortalama varsayım" |
 | Usable area (manual area + photo) | roof_area × 0.85 × (1 − obstacle_ratio) |
 | Usable area (no photo) | roof_area × 0.276, labelled "ortalama varsayım" in the UI |
 | obstacle_ratio | obstacle area ÷ roof area in pixels (scale-free; union of obstacle boxes/masks clipped to the roof) |
@@ -162,7 +164,14 @@ Objective: given a building in Istanbul (and optionally a roof photo), produce a
 | Shading loss (%) | 100 − suitability |
 | Annual kWh | kWp × E_shaded |
 | CO2 (t/yr) | kWh × 0.6345 ÷ 1000 |
-| Savings range (TL/yr) | low = kWh × tariff × 0.5, high = kWh × tariff × 1.0 (self-consumption assumption shown in the UI) |
+| Savings range (TL/yr) | with a monthly bill: C = kwh_from_bill(bill); for each of 12 roof-scaled shaded monthly values P: saving = bill_tl(C) − bill_tl(max(C − P × share, 0)), share 0.5 and 1.0; summed over months. Without a bill: kWh × [0.5 × LOW, 1.0 × HIGH], labelled a wide estimate |
+
+**Tariff and bill-based savings (Prototype P1):**
+- `LOW = 2.918965 × 1.26`, `HIGH = 4.320708 × 1.26` TL/kWh (EPDK, excluding tax × `TAX_FACTOR`, applied once); only consumption above `LIMIT` = 8 kWh/day × 30 = 240 kWh/month is billed at HIGH; `BILL_AT_LIMIT` = LIMIT × LOW ≈ 882.7 TL.
+- `bill_tl(kwh)`, `kwh_from_bill(bill)` (None, NaN or ≤ 0 → 0 kWh) and `monthly_savings(C, production, share)` are closed-form; PV offsets the HIGH-tier kWh first; surplus beyond consumption is valued at 0.
+- The production passed to the savings is ROOF-scaled: kWp × E_m of the SHADED PVGIS run (never raw E_m); the 12 values sum to the displayed annual kWh.
+- Coverage = annual savings ÷ (12 × bill), capped at 100 %. `self_used_share` = Σ min(production, C) ÷ annual production; at 100 % coverage or < 50 % self use the UI says one flat cannot use the whole production and the surplus could serve common areas or other flats.
+- Savings are for one household's own meter; formally sharing a roof system between flats is out of scope.
 
 **Confidence:**
 - **Yüksek:** top-down photo AND ≥ 70% of neighbour heights from tags, i.e. `height_source in ("height_tag", "levels_tag")`. Both count, because most Istanbul buildings in OSM only have `building:levels`.
@@ -170,6 +179,13 @@ Objective: given a building in Istanbul (and optionally a roof photo), produce a
 - **Düşük:** no photo AND most heights are defaults
 
 In the Demo stage (no building data yet), confidence depends on the photo only: top-down = Orta, oblique or no photo = Düşük.
+
+**Prototype P1 confidence** (only inputs that change a shown result count; replaces the height-based rule above until P2):
+- building polygon (with or without a usable top-down photo) → Orta; manual area without photo → Düşük; manual area with a top-down photo → Orta; Yüksek stays unreachable until P2 neighbour shading.
+- roof type "Bilmiyorum" drops one level (not below Düşük).
+- building height and the bill do NOT affect confidence in P1 (height is shown as information; the empty-bill case is labelled on the TL card only). TODO P2: height joins the confidence.
+- the UI lists only actions that would improve the result (top-down photo, roof type, a bill for the TL card).
+- a bundled demo photo is never applied to a real clicked building (its vision result is only displayed); a user-uploaded photo is assumed to show the clicked building.
 
 Orientation also adds a reason (Prototype+):
 - `yon_kaynagi` = `"user"` or `"osm_tag"` → positive reason ("çatı yönü biliniyor")
@@ -220,12 +236,18 @@ Always list the reasons for the confidence level.
 - **Horizon chart:** 72-value profile with sun paths for 21 Jun and 21 Dec.
 - **Photo overlay:** roof (green), obstacles (red), confirmed vs check labels.
 - **"Varsayımlar ve kaynaklar" box (Demo-2 onwards):** a compact table under the results. Every number shown is tagged with one of:
-  - "Ölçüm/veri" (PVGIS, OSM, photo detection)
+  - "Ölçüm/veri" (PVGIS, building footprint, photo detection)
   - "Kullanıcı girdisi"
-  - "Varsayım" (0.276, 0.85, SETBACK_M, tilt defaults, self-consumption range, CO2 factor)
+  - "Varsayım" (0.276, 0.85, SETBACK_M, tilt defaults, self-consumption range, tariff tax factor, CO2 factor)
+  - "YZ tahmini" (ML building height)
   - "Sonraki aşamada" (features not yet active)
 
-  Each row shows its source.
+  Each row shows its source. Rows added in Prototype P1 (numbers come from `height_model_report.json`, never typed into UI text):
+  - **Bina yüksekliği:** value and source label; for `ml_estimate` it is a YZ tahmini (LightGBM) with the cross-validated MAE (6.78 m, 41 % within ±3 m; 3,376 buildings with known height, 5-fold CV, value hidden). Baselines: constant 15 m 13.05 m, neighbour median 7.86 m, GlobalBuildingAtlas raw 11.02 m. The GBA-assisted variant (5.88 m) was REJECTED: GBA heights are CC BY-NC 4.0, incompatible with ODbL data and the AGPL repo, so the shipped column contains no GBA-derived values.
+  - **Kenar boşluğu:** `SETBACK_M` (Varsayım).
+  - **Elektrik tarifesi:** LOW / HIGH TL/kWh incl. tax, `TARIFF_SOURCE`, tax factor approximate (Varsayım).
+  - **Aylık fatura / Tasarruf aralığı:** bill-based (Kullanıcı girdisi) or wide estimate when consumption is unknown.
+  - **Tasarruf kapsamı:** one household's own meter; surplus production counts as 0 TL; sharing a roof between flats is out of scope.
 - **Map layers:**
   - OSM (default)
   - satellite tiles (display only)
@@ -240,7 +262,7 @@ Always list the reasons for the confidence level.
 |---|---|---|---|
 | Day 0 | Fri 16 Oct | skeleton and map (step 1, local); GitHub + first Render deploy (step 2) | step 1: the map runs locally and the smoke test passes; step 2: the public Render URL shows the map |
 | Demo | Sat 17 Oct | manual roof area + roof type; photo (upload or demo) → Gemini perception + overlay; PVGIS ideal + terrain run; calc; metric cards; monthly chart; "Varsayımlar ve kaynaklar" box; explanation | on the live URL, a demo image + area gives cards + explanation without errors |
-| Prototype | Mon 19 Oct | Overpass building + neighbours; roof area from OSM + geometric setback; roof orientation (user override → OSM tags → ridge estimate → optimal) with two-face PVGIS for pitched roofs and two tilt scenarios for flat roofs; panel layout optimization (optimize_layout) drawn on the map; horizon; shaded PVGIS run; shading heatmap; horizon chart; confidence; Istanbul reference; irradiation layer; 5 demo buildings | all 5 demo buildings give results; horizon, ridge and setback unit tests pass |
+| Prototype | Mon 19 Oct | Local Overture building + neighbours (P1: click lookup, ML height, bill-based savings); roof area from OSM + geometric setback; roof orientation (user override → OSM tags → ridge estimate → optimal) with two-face PVGIS for pitched roofs and two tilt scenarios for flat roofs; panel layout optimization (optimize_layout) drawn on the map; horizon; shaded PVGIS run; shading heatmap; horizon chart; confidence; Istanbul reference; irradiation layer; 5 demo buildings | all 5 demo buildings give results; horizon, ridge and setback unit tests pass |
 | MVP | Tue 20 Oct | Roof Agent + "YZ'nin adımları" + scenario selection over optimize_layout; yolo_service on Render + fusion; number check; run_scenario | agent logs ≥ 5 tool calls; app still works with the YOLO service off |
 | Freeze | Wed 21 Oct 18:00 | bug fixes only | screen recording done, texts written |
 

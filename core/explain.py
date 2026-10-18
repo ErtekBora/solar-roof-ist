@@ -24,12 +24,15 @@ _ONE_DECIMAL_KEYS = (
     "toplam_cati_alani_m2", "engel_alani_m2", "kullanilabilir_alan_m2", "kurulabilir_guc_kwp",
     "golge_kaybi_yuzde", "uygunluk_puani_yuzde", "sicaklik_kaybi_yuzde", "co2_ton_yil",
 )
-_PASSTHROUGH_KEYS = ("cati_tipi", "goruntu_turu", "guven_seviyesi", "guven_nedenleri", "tarife_tl_kwh")
+_PASSTHROUGH_KEYS = ("cati_tipi", "goruntu_turu", "guven_seviyesi", "guven_nedenleri", "tasarruf_yontemi")
+# savings fields (bill given: coverage, self-use; tariff always): the model may quote them, never compute with them
+_SAVINGS_INT_KEYS = ("fatura_tl_ay", "tuketim_kwh_ay", "kendi_kullanim_orani_yuzde")
+_TARIFF_KEYS = ("tarife_dusuk_tl_kwh", "tarife_yuksek_tl_kwh")
 _RELOCATABLE_LABELS = ("Su deposu", "Klima", "Uydu çanağı")
 
 FINANCIAL_TERMS = (
     "amorti", "geri ödeme", "geri dönüş süresi", "maliyet", "yatırım", "teşvik", "kredi", "taksit",
-    "fatura", "kazanç süresi",
+    "kazanç süresi",
 )
 
 SYSTEM_PROMPT = f"""Sen İstanbul'da bir apartmanda yaşayan birine konuşan, sade Türkçe kullanan bir çatı güneş enerjisi danışmanısın.
@@ -44,7 +47,8 @@ Girdi, hesaplanmış sonuçları içeren bir JSON'dur. Yanıtın TAM OLARAK şu 
 
 Kesin kurallar:
 - YALNIZCA girdideki sayıları kullan. Geri ödeme süresi, panel adedi, maliyet, teşvik, kredi koşulu veya girdide olmayan hiçbir yüzdeyi hesaplama ya da uydurma. Sayıları değiştirme, yeniden toplama veya bölme.
-- Şu sözcükleri hiç kullanma: amorti, geri ödeme, geri dönüş süresi, maliyet, yatırım, teşvik, kredi, taksit, fatura, kazanç süresi. Parasal kazancı anlatırken "tasarruf" de.
+- Şu sözcükleri hiç kullanma: amorti, geri ödeme, geri dönüş süresi, maliyet, yatırım, teşvik, kredi, taksit, kazanç süresi. Parasal kazancı anlatırken "tasarruf" de.
+- tasarruf_yontemi "fatura" ise tasarrufu faturayla ilişkilendir: faturanın yüzde kaçının karşılandığını fatura_karsilama_yuzde_aralik ile ("faturanızın %60–%85'ini karşılar") ve gerekirse kendi_kullanim_orani_yuzde ile anlat. "genis_tahmin" ise tüketim bilinmediği için tasarruf aralığının geniş olduğunu söyle. Tarife değerlerini (tarife_dusuk_tl_kwh, tarife_yuksek_tl_kwh) anabilirsin; ama bunlarla ASLA hesap yapma, yeni TL tutarı üretme.
 - "uygunluk_puani_yuzde" YALNIZCA arazi (tepe) gölgesini yansıtır. Onu sadece "arazi gölgesi açısından" diyerek an; asla genel uygunluk hükmü olarak kullanma. Genel hükmü özgül verim, kullanılabilir alan / kWp ve güven seviyesine dayandır.
 - Yalnızca su deposu, klima ve uydu çanağı başka yere taşınabilir. Çatı penceresi, baca, çatı katı / çatıdaki yapılar ve mevcut güneş panelleri için ASLA kaldırma veya taşıma önerme; bunlardan söz etme (tek istisna: engel_sayilari "Baca" içerdiğinde, adedini belirterek çevresindeki boşluğu kurulum firmasına kontrol ettirmeyi önerebilirsin).
 - Koşullu anlatım kullanma ("varsa", "olması durumunda", "-abiliyorsa" gibi). Öneriyi kesin cümleyle yaz.
@@ -86,6 +90,14 @@ def build_payload(result, detection=None, demo_photo=False):
         payload["engel_orani"] = round_half_up(result["engel_orani"], 3)
     if result.get("yillik_tasarruf_tl_aralik") is not None:
         payload["yillik_tasarruf_tl_aralik"] = [round_half_up(v, 0) for v in result["yillik_tasarruf_tl_aralik"]]
+    for key in _SAVINGS_INT_KEYS:
+        if result.get(key) is not None:
+            payload[key] = round_half_up(result[key], 0)
+    if result.get("fatura_karsilama_yuzde_aralik") is not None:
+        payload["fatura_karsilama_yuzde_aralik"] = [round_half_up(v, 0) for v in result["fatura_karsilama_yuzde_aralik"]]
+    for key in _TARIFF_KEYS:
+        if result.get(key) is not None:
+            payload[key] = round_half_up(result[key], 2)
     payload["fotograf_var"] = detection is not None
     payload["demo_photo"] = bool(demo_photo) and detection is not None
     if detection is not None:
