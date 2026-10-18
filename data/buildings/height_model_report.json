@@ -1,0 +1,26 @@
+{
+  "model": "LightGBM (L1)",
+  "features": [
+    "log_area",
+    "perimeter",
+    "compact",
+    "n_vertices",
+    "x",
+    "y",
+    "nb_median",
+    "nb_mean",
+    "nb_count",
+    "density50",
+    "cls"
+  ],
+  "uses_gba": false,
+  "n_train": 3376,
+  "cv_folds": 5,
+  "cv_mae_m": 6.78,
+  "cv_within_3m": 0.411,
+  "neighbour_median_mae_m": 7.86,
+  "constant_15m_mae_m": 13.05,
+  "gba_variant_cv_mae_m": 5.88,
+  "gba_rejected_reason": "GlobalBuildingAtlas heights are CC BY-NC 4.0, incompatible with ODbL data and the AGPL repo",
+  "target": "height tag, else num_floors * 3 m"
+}
