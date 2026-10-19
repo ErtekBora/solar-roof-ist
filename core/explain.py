@@ -62,19 +62,20 @@ def system_prompt_for(payload=None):
     banned = ", ".join(t for t in forbidden_terms(payload) if t != "kazanç süresi")
     return f"""Sen İstanbul'da bir apartmanda yaşayan kat maliklerine konuşan, sade Türkçe kullanan bir çatı güneş enerjisi danışmanısın.
 Amaç: apartmandaki dairelerin birlikte tek bir çatı sistemi kurması, tek seferde ödemesi ve üretimi dairelere EŞİT paylaştırarak elektrik faturalarını düşürmesidir.
-Girdi, hesaplanmış sonuçları içeren bir JSON'dur. Yanıtın TAM OLARAK şu yapıda olsun:
+Girdi, hesaplanmış sonuçları içeren bir JSON'dur. Yanıt KISA olsun: toplam en fazla yaklaşık 6 cümle ve en fazla 3 madde. TAM OLARAK şu yapıda yaz:
 1) İlk satır: TEK cümlelik genel hüküm. Değerlendirici sıfat kullanma (elverişli, uygun, ideal, mükemmel vb. yok); yalnızca özgül verimi (kWh/kWp) ve kurulabilir gücü (kWp) sayılarıyla aktar ve güven seviyesini belirt. Cümle nokta ile bitsin.
-2) "-" ile başlayan 3 madde (nedenler); her biri girdideki sayılara dayansın:
-   a) bu konumdaki yıllık ışınım ve özgül verim;
-   b) engel oranı, kullanılabilir alan ve çatı yapısı (kurulabilir_guc_kwp ve yillik_uretim_kwh bina toplamıdır). "Ortalama orana göre varsayım" ifadesini YALNIZCA fotograf_var false ise kullan; fotograf_var true ise alanın fotoğraftan ölçüldüğünü söyle. Kullanılan, elenen ve alınamayan çatı yüzlerini senaryolar listesinden aktar;
-   c) daire başına durum: daire sayısı (daire_sayisi_tahmini true ise "tahmini" de), daire başına tasarruf, varsa fatura karşılama oranı, kurulum maliyeti, arazi gölgesi ve güven seviyesi.
-3) "-" ile başlayan 2 pratik öneri (ör. fotoğraf açılıysa veya yoksa kuşbakışı fotoğraf deneyin; daire_sayisi_tahmini true ise gerçek daire sayısını girmelerini söyle; yalnızca engel_sayilari gerçekten su deposu, klima veya uydu çanağı içeriyorsa onları adetleriyle adlandırarak ("2 uydu çanağı") başka yere taşımayı öner; içermiyorsa taşıma önerme, bunun yerine başka yararlı bir öneri ver: kuşbakışı fotoğraf deneyin veya engel_sayilari "Baca" içeriyorsa tespit edilen baca sayısını yazarak şöyle öner: "Çatınızdaki 5 bacanın çevresindeki boşluğu bir kurulum firmasına kontrol ettirin.").
+2) Ayrı bir satırda en fazla 4 cümlelik kısa bir paragraf. Odak: binanın kurulabilir gücü ve yıllık üretimi (bina toplamı); daire başına sabit indirim (yıllık ve aylık ortalama) ve varsa geri ödeme süresi; en büyük belirsizlik ve onu azaltacak TEK adım. Yıllık ışınım ve arazi gölgesine en fazla bir cümle ayır. "Ortalama orana göre varsayım" ifadesini YALNIZCA fotograf_var false ise kullan; fotograf_var true ise alanın fotoğraftan ölçüldüğünü söyle. daire_sayisi_tahmini true ise "tahmini" de.
+3) "-" ile başlayan EN FAZLA 3 pratik öneri (ör. fotoğraf açılıysa veya yoksa kuşbakışı fotoğraf deneyin; daire_sayisi_tahmini true ise gerçek daire sayısını girmelerini söyle; yalnızca engel_sayilari gerçekten su deposu, klima veya uydu çanağı içeriyorsa onları adetleriyle adlandırarak ("2 uydu çanağı") başka yere taşımayı öner; içermiyorsa taşıma önerme, bunun yerine başka yararlı bir öneri ver: kuşbakışı fotoğraf deneyin veya engel_sayilari "Baca" içeriyorsa tespit edilen baca sayısını yazarak şöyle öner: "Çatınızdaki 5 bacanın çevresindeki boşluğu bir kurulum firmasına kontrol ettirin.").
 4) Son satır AYNEN şu olsun: {WARNING_LINE}
 
 Kesin kurallar:
 - YALNIZCA girdideki sayıları kullan. Panel adedi, girdide olmayan süre veya tutar, teşvik, kredi koşulu veya girdide olmayan hiçbir yüzdeyi hesaplama ya da uydurma. Sayıları değiştirme, yeniden toplama veya bölme.
 - Şu sözcükleri hiç kullanma: {banned}, kazanç süresi. Parasal kazancı anlatırken "tasarruf" de.
 - Tasarruf her daireye EŞİT TL indirim olarak verilir (herkes kurulumu eşit öder): daire_basi_tasarruf_tl_yil yıllık, daire_basi_indirim_tl_ay yıllık ortalama aylık indirimdir; "sabit indirim" de. Yıllık ortalama olduğunu, kışın az yazın çok olduğunu ve indirimin faturayı aşamayacağını belirt. Bireysel daire faturası isteme.
+- Girdideki alan (anahtar) adlarını ASLA yazma: alt çizgili hiçbir ad (örneğin kurulabilir_guc_kwp) metinde geçmesin; her şeyi doğal Türkçe ile söyle.
+- Ekranda zaten gösterilen notları tekrar etme: aylık mahsuplaşma, yıllık ortalama / mevsim notu, eşit paylaşım ve aidat notu, maliyet kaynağı, maliyete dahil olmayan kalemler ve hukuki not. Yalnızca gerekiyorsa tek kelimeyle an.
+- fotograf_var false ise engel oranından ve engellerden hiç söz etme (engeller bilinmiyor, sıfır değil).
+- arazi_golgesi "yok" ise "arazi gölgesi yok (%100)" de; gölge kaybı veya sıfır yüzdesi yazma.
 - Sonuçlar bina için ve dairelere eşit paylaştırma esasıyla verilir: "tek daire" veya "tek hane" anlatımı kullanma, "daire başına" de.
 - tasarruf_yontemi "fatura" ise tasarrufu daire başına fatura ile ilişkilendir: faturanın yüzde kaçının karşılandığını fatura_karsilama_yuzde_aralik ile ("Daire başına faturanın yaklaşık %20–%30'u karşılanır") anlat ve tuketim_varsayimi ile mahsuplasma_varsayimi metinlerini kısaca aktar. "genis_tahmin" ise tüketim (tarife kademesi) bilinmediği için tasarruf aralığının geniş olduğunu söyle. Tarife değerlerini (tarife_dusuk_tl_kwh, tarife_yuksek_tl_kwh) anabilirsin; ama bunlarla ASLA hesap yapma, yeni TL tutarı üretme.
 - Kurulum maliyeti: kurulum_maliyeti_tl bina toplamıdır, daire_basi_maliyet_tl daire başınadır; ikisini olduğu gibi aktar ve gerçek fiyatın teklifle netleşeceğini söyle. maliyet_bayraklari doluysa içeriğini aktar.
@@ -118,9 +119,14 @@ def build_payload(result, detection=None, demo_photo=False):
         if result.get(key) is not None:
             payload[key] = round_half_up(result[key], 0)
     for key in _ONE_DECIMAL_KEYS:
+        if key == "engel_alani_m2" and detection is None:
+            continue  # no photo: obstacles are unknown, not zero
         if result.get(key) is not None:
             payload[key] = round_half_up(result[key], 1)
-    if result.get("engel_orani") is not None:
+    if payload.get("golge_kaybi_yuzde") == 0:
+        del payload["golge_kaybi_yuzde"]  # a 0 % loss is said as "arazi gölgesi yok (%100)"
+        payload["arazi_golgesi"] = "yok"
+    if result.get("engel_orani") is not None and detection is not None:
         payload["engel_orani"] = round_half_up(result["engel_orani"], 3)
     for key in _SAVINGS_INT_KEYS:
         if result.get(key) is not None:
@@ -313,6 +319,19 @@ def validate_explanation_numbers(text, payload):
     return not invalid, invalid
 
 
+_SNAKE_RE = re.compile(r"[a-z]+_[a-z_]+")
+
+
+def find_field_names(text, payload):
+    """Payload keys and snake_case tokens that leaked into the text (sorted); [] when the text is clean."""
+    cleaned = (text or "").replace(WARNING_LINE, "")
+    leaked = set(_SNAKE_RE.findall(cleaned))
+    for key in payload:
+        if re.search(rf"(?<![\w]){re.escape(key)}(?![\w])", cleaned):
+            leaked.add(key)
+    return sorted(leaked)
+
+
 # -------------------------------------------------------------------- template
 
 def _relocatable_phrase(payload):
@@ -328,67 +347,71 @@ def _fmt(value, decimals=0):
 
 
 def _building_fallback(p):
-    """Template for the building mode: same 4 sections, only payload numbers, equal-sharing wording."""
+    """Concise template: verdict, one short paragraph, at most 3 tips; only payload numbers, no notes shown on screen."""
     unknown = p["cati_yapisi"] == "Bilmiyorum"
     verdict = (
         f"Bu konumda her kWp panel yılda yaklaşık {tr_num(p['golgeli_uretim_kwh_kwp'])} kWh üretir; "
         f"çatıya yaklaşık {_fmt(p['kurulabilir_guc_kwp'], 1)} kWp sığabilir (güven: {p['guven_seviyesi']})."
     )
-    if unknown:
-        verdict += " Çatı yapısı bilinmediği için sonuçlar aralık olarak verildi."
     if p["demo_photo"]:
         verdict += " Gösterilen fotoğraf örnektir, sizin çatınız değildir."
 
-    if p["fotograf_var"] and p.get("engel_orani") is not None:
-        area = (
-            f"çatının %{tr_num(percent_from_ratio(p['engel_orani']), 1)} kadarı engellerle kaplı; "
-            f"{tr_num(p['toplam_cati_alani_m2'], 1)} m² çatıdan {tr_num(p['kullanilabilir_alan_m2'], 1)} m² kullanılabilir"
-        )
-    else:
-        area = (
-            f"kullanılabilir alan ortalama orana göre varsayıldı: "
-            f"{tr_num(p['toplam_cati_alani_m2'], 1)} m² çatıdan {tr_num(p['kullanilabilir_alan_m2'], 1)} m²"
-        )
+    terrain = (
+        "arazi gölgesi yok (%100)" if p.get("arazi_golgesi") == "yok"
+        else f"arazi gölgesi açısından uygunluk %{tr_num(p['uygunluk_puani_yuzde'], 1)}"
+    )
+    s1 = (
+        f"Bina toplamı yılda yaklaşık {_fmt(p['yillik_uretim_kwh'])} kWh üretir; yıllık ışınım "
+        f"{tr_num(p['yillik_isinim_kwh_m2'])} kWh/m², {terrain}."
+    )
     flats = f"{p['daire_sayisi']} daire" + (" (tahmini)" if p["daire_sayisi_tahmini"] else "")
-    share = (
-        f"Üretim {flats} arasında eşit paylaşılır; her daireye sabit indirim yıllık yaklaşık "
-        f"{_fmt(p['daire_basi_tasarruf_tl_yil'])} TL (aylık ortalama {_fmt(p['daire_basi_indirim_tl_ay'])} TL)"
+    s2 = (
+        f"Üretim {flats} arasında eşit paylaşılırsa her daireye sabit indirim yıllık yaklaşık "
+        f"{_fmt(p['daire_basi_tasarruf_tl_yil'])} TL (aylık ortalama {_fmt(p['daire_basi_indirim_tl_ay'])} TL) olur"
     )
     if p.get("fatura_karsilama_yuzde_aralik") is not None:
-        share += f", faturanın yaklaşık %{_fmt(p['fatura_karsilama_yuzde_aralik'])} kadarı karşılanır"
+        s2 += f"; daire faturasının yaklaşık %{_fmt(p['fatura_karsilama_yuzde_aralik'])} kadarı karşılanır"
     else:
-        share += " (geniş tahmin: kademe bilinmiyor)"
-    if p.get("mahsuplasma_varsayimi"):
-        share += ". " + p["mahsuplasma_varsayimi"].rstrip(".")
-    cost_line = (
+        s2 += " (geniş tahmin: kademe bilinmiyor)"
+    s2 += "."
+    s3 = (
         f"Kurulum maliyeti toplam yaklaşık {_fmt(p['kurulum_maliyeti_tl'])} TL, daire başına "
-        f"{_fmt(p['daire_basi_maliyet_tl'])} TL; gerçek fiyat teklifle netleşir"
+        f"{_fmt(p['daire_basi_maliyet_tl'])} TL"
     )
     if p["geri_odeme_yil"] != "hesaplanamaz":
-        cost_line += (
-            f". Geri ödeme süresi yaklaşık {_fmt(p['geri_odeme_yil'], 1)} yıl "
-            "(bozulma, bakım ve tarife değişimi dikkate alınmadı)"
-        )
-    bullets = [
-        f"- Bu konumda yıllık ışınım {tr_num(p['yillik_isinim_kwh_m2'])} kWh/m²; panel başına özgül verim "
-        f"{tr_num(p['golgeli_uretim_kwh_kwp'])} kWh/kWp; arazi gölgesi açısından uygunluk %{tr_num(p['uygunluk_puani_yuzde'], 1)}.",
-        f"- Alan: {area}. {share}.",
-        f"- {cost_line}; güven seviyesi {p['guven_seviyesi']}.",
-    ]
-    if p.get("goruntu_turu") != "top-down":
-        photo_tip = "- Kuşbakışı (yukarıdan çekilmiş) bir fotoğraf deneyin; alan ve engel ölçümü daha güvenilir olur."
+        s3 += f"; geri ödeme süresi yaklaşık {_fmt(p['geri_odeme_yil'], 1)} yıl"
+    s3 += "."
+    if unknown:
+        s4 = "En büyük belirsizlik çatı yapısı: tamamen düz ve tamamen eğimli çatı için aralık verildi."
+    elif not p["fotograf_var"]:
+        s4 = "En büyük belirsizlik kullanılabilir alan: fotoğraf olmadığı için ortalama orana göre varsayıldı."
+    elif p.get("engel_orani") is not None:
+        s4 = f"Fotoğrafa göre çatının %{tr_num(percent_from_ratio(p['engel_orani']), 1)} kadarı engellerle kaplı."
+    elif p["daire_sayisi_tahmini"]:
+        s4 = "En büyük belirsizlik daire sayısı: tahmindir."
     else:
-        photo_tip = "- Engel tablosunu kontrol edin; çatıda olmayan engellerin işaretini kaldırarak sonucu güncelleyin."
+        s4 = "Kesin sonuç için yerinde ölçüm gerekir."
+    paragraph = " ".join([s1, s2, s3, s4])
+
+    tips = []
+    if unknown:
+        tips.append("- Çatı yapısını (düz, eğimli, karma) seçin; sonuç aralığı daralır.")
+    elif not p["fotograf_var"] or p.get("goruntu_turu") != "top-down":
+        tips.append("- Kuşbakışı (yukarıdan çekilmiş) bir fotoğraf deneyin; alan ve engel ölçümü daha güvenilir olur.")
+    elif p.get("engel_orani") is not None:
+        tips.append("- Engel tablosunu kontrol edin; çatıda olmayan engellerin işaretini kaldırarak sonucu güncelleyin.")
+    if p["daire_sayisi_tahmini"]:
+        tips.append("- Daire sayısı tahmindir; gerçek daire sayısını girin, daire başına rakamlar buna göre güncellenir.")
+    if p["tasarruf_yontemi"] == "genis_tahmin":
+        tips.append("- Ortalama daire faturasını girin; tasarruf aralığı daralır.")
     relocatable = _relocatable_phrase(p)
     if relocatable:
-        tip2 = f"- Çatıda {relocatable} var; bunları başka bir yere taşımanın mümkün olup olmadığına bakın, kullanılabilir alan artar."
+        tips.insert(1, f"- Çatıda {relocatable} var; bunları başka bir yere taşımanın mümkün olup olmadığına bakın, kullanılabilir alan artar.")
     elif "Baca" in p.get("engel_sayilari", {}):
-        tip2 = f"- Çatınızdaki {p['engel_sayilari']['Baca']} bacanın çevresindeki boşluğu bir kurulum firmasına kontrol ettirin."
-    elif p["daire_sayisi_tahmini"]:
-        tip2 = "- Daire sayısı tahmindir; gerçek daire sayısını girin, daire başına rakamlar buna göre güncellenir."
-    else:
-        tip2 = "- Kat malikleri kurulu kararını ve dağıtım şirketi onayını netleştirin, ardından bir kurulum firmasından teklif alın."
-    return "\n".join([verdict, *bullets, photo_tip, tip2, WARNING_LINE])
+        tips.insert(1, f"- Çatınızdaki {p['engel_sayilari']['Baca']} bacanın çevresindeki boşluğu bir kurulum firmasına kontrol ettirin.")
+    if not tips:
+        tips.append("- Kat malikleri kurulu kararını netleştirin, ardından bir kurulum firmasından teklif alın.")
+    return "\n".join([verdict, paragraph, *tips[:3], WARNING_LINE])
 
 
 def build_fallback_explanation(result, detection=None, demo_photo=False):
@@ -416,7 +439,12 @@ def _generate(client, payload, hint=None):
     return client.models.generate_content(model=EXPLAIN_MODEL, contents=contents, config=config).text
 
 
-def _retry_hint(invalid):
+def _retry_hint(invalid, leaked=()):
+    if leaked:
+        return (
+            f"Önceki yanıtta girdideki alan adları geçiyordu: {', '.join(leaked)}. Alan adlarını hiç yazma; "
+            "doğal Türkçe kullan."
+        )
     if not invalid:
         return "Önceki yanıt boştu. Kurallara uyarak yanıtı yeniden yaz."
     numbers = ", ".join(tr_num(v, 0 if float(v).is_integer() else 2) for v in invalid)
@@ -440,12 +468,13 @@ def explain_result(result, detection=None, api_key=None, demo_photo=False):
         for attempt in range(2):
             text = (_generate(client, payload, hint) or "").strip()
             ok, invalid = validate_explanation_numbers(text, payload) if text else (False, [])
-            if ok:
+            leaked = find_field_names(text, payload) if text else []
+            if ok and not leaked:
                 out = {"text": text, "source": "gemini", "retried": retried, "invalid_numbers": []}
                 _cache[key] = out
                 return dict(out)
             if attempt == 0:
-                retried, hint = True, _retry_hint(invalid)
+                retried, hint = True, _retry_hint(invalid, leaked)
     except Exception:  # missing key, network, 429/503, SDK errors: degrade to the template
         pass
     return {

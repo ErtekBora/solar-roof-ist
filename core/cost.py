@@ -23,6 +23,16 @@ def clamp_flats(n_flats):
     return max(1, n)
 
 
+def flag_message(flag):
+    """UI text for a cost flag; the out-of-range flag says what it refers to."""
+    if flag == FLAG_OUT_OF_RANGE:
+        return (
+            f"Maliyet: sistem {COST_BAND_MAX_SOURCED_KWP} kWp'nin üzerinde; fiyat bandı kaynak aralığı dışında, "
+            "tahmin daha belirsiz."
+        )
+    return flag[0].upper() + flag[1:] + "."
+
+
 def cost_band(kwp):
     """(low, high) TL/kWp of the band containing `kwp` (upper limits are exclusive)."""
     for upper, low, high in COST_BANDS_TL_PER_KWP:

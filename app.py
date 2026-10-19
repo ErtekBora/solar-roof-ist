@@ -59,7 +59,12 @@ PHOTO_GUIDANCE = (
 )
 PHOTO_BENEFIT = "Fotoğraf, ortalama kullanılabilir alan varsayımının yerine geçer ve sonucun güvenini artırır."
 DEMO_DIR = Path(__file__).parent / "data" / "demo_images"
-DEMO_PHOTO_NOTE = "Bu örnek fotoğraf seçtiğiniz binaya ait değil; yalnızca YZ'nin çatı tespitini göstermek içindir."
+DEMO_PHOTO_NOTE = (
+    "Bu, uygulamayla birlikte gelen bir örnek fotoğraftır (Pexels / Roboflow, lisans bilgisi altta); seçtiğiniz "
+    "binanın fotoğrafı değildir. YZ'nin çatıda neleri tespit ettiğini göstermek için kullanılır ve hesaba katılmaz. "
+    "Kendi çatınızın fotoğrafını yukarıdaki 'Çatı fotoğrafı yükleyin' adımından ekleyebilirsiniz."
+)
+DEMO_EXPANDER = "Örnek fotoğrafla dene (stok fotoğraf, hesaba katılmaz)"
 ACCENT = "#e8710a"
 ATTRIBUTION = (
     "© OpenStreetMap katkıcıları · Bina verisi: Overture Maps Foundation (ODbL), Microsoft ML Buildings · "
@@ -351,8 +356,12 @@ def recompute(bundle, inputs, detection, included_ids):
 def format_savings_short(lo, hi):
     """Card-sized TL range: thousands with one decimal ("27,5 – 55,0 bin TL")."""
     if hi < 1000:
-        return f"{tr_num(lo)} – {tr_num(hi)} TL"
-    return f"{tr_num(lo / 1000, 1)} – {tr_num(hi / 1000, 1)} bin TL"
+        a, b, unit, decimals = round_half_up(lo, 0), round_half_up(hi, 0), "TL", 0
+    else:
+        a, b, unit, decimals = round_half_up(lo / 1000, 1), round_half_up(hi / 1000, 1), "bin TL", 1
+    if a == b:
+        return f"{tr_num(a, decimals)} {unit}"
+    return f"{tr_num(a, decimals)} – {tr_num(b, decimals)} {unit}"
 
 
 def format_range(values, decimals=0, unit=""):
@@ -700,7 +709,7 @@ def show_cards(r, inputs=None, applied=False, building=None):
     for warning in r["uyarilar"]:
         st.warning(warning + ".")
     for flag in r["maliyet_bayraklari"]:
-        st.warning(flag[0].upper() + flag[1:] + ".")
+        st.warning(cost.flag_message(flag))
     for text in (coverage_text(r), remaining_bill_text(r)):
         if text:
             st.info(text)
@@ -750,12 +759,16 @@ def render_explanation_text(text):
     if not lines:
         return
     st.markdown(f"**{lines[0]}**")
+    warn = "\u26a0"
+    body = [ln for ln in lines[1:] if not ln.startswith(("-", warn))]
+    if body:
+        st.write(" ".join(body))
     bullets = [ln for ln in lines[1:] if ln.startswith("-")]
     if bullets:
         st.markdown("\n".join(bullets))
     for ln in lines[1:]:
-        if not ln.startswith("-"):
-            st.warning(ln.replace("⚠️", "").strip())
+        if ln.startswith(warn):
+            st.warning(ln.replace("\ufe0f", "").replace(warn, "").strip())
 
 
 def explanation_section(analysis, result, detection):
@@ -797,7 +810,7 @@ def photo_step(state):
             st.error(f"Dosya çok büyük; en fazla {MAX_UPLOAD_MB} MB yükleyebilirsiniz.")
         else:
             image_bytes, name = uploaded.getvalue(), uploaded.name
-    with st.expander("Örnek fotoğrafla dene"):
+    with st.expander(DEMO_EXPANDER):
         files = sorted(p.name for p in DEMO_DIR.glob("roof_*.jpg"))
         if files:
             chosen = st.selectbox("Örnek fotoğraf", [DEMO_NONE, *files])

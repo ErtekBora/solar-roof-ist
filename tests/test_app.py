@@ -1052,3 +1052,47 @@ def test_netting_note_is_shown_with_a_bill_and_not_without(mocked, building_poin
     assert building_mode.NETTING_NOTE not in [c.value for c in at.caption]
     _widget(at.number_input, BILL_LABEL).set_value(1500.0).run()
     assert building_mode.NETTING_NOTE in [c.value for c in at.caption]
+
+
+# ------------------------------------------------- live-test feedback: ranges, notices
+
+def test_ranges_collapse_to_one_value_when_equal_after_rounding():
+    assert app.format_savings_short(6190, 6210) == "6,2 bin TL"
+    assert app.format_savings_short(500.2, 500.4) == "500 TL"
+    assert app.format_savings_short(6000, 7000) == "6,0 – 7,0 bin TL"
+    assert app.format_range([21.04, 21.0], 1, "kWp") == "21,0 kWp"
+    assert app.format_range([5.0, 6.0], 1, "kWp") == "5,0 – 6,0 kWp"
+    assert app.payback_text([7.04, 7.0]) == "7,0 yıl"
+    assert app.payback_text([None, None]) is None
+
+
+def test_out_of_range_cost_flag_and_demo_notice_texts(mocked, building_point):
+    assert app.DEMO_PHOTO_NOTE.startswith("Bu, uygulamayla birlikte gelen bir örnek fotoğraftır (Pexels / Roboflow")
+    assert "hesaba katılmaz. Kendi çatınızın fotoğrafını yukarıdaki 'Çatı fotoğrafı yükleyin' adımından" in app.DEMO_PHOTO_NOTE
+    assert app.DEMO_EXPANDER == "Örnek fotoğrafla dene (stok fotoğraf, hesaba katılmaz)"
+    at = _run_with_point(building_point, skip=False)
+    assert [e.label for e in at.expander] == [app.DEMO_EXPANDER]
+
+
+def test_large_system_shows_the_labelled_cost_warning(mocked, monkeypatch, building_point):
+    real = building_mode.analyze_building
+
+    def big(**kwargs):
+        return real(**{**kwargs, "usable_base_area_m2": 800.0, "roof_area_m2": 900.0})
+
+    monkeypatch.setattr(building_mode, "analyze_building", big)
+    at = _after_hesapla(building_point)
+    assert any(
+        w.value == "Maliyet: sistem 20 kWp'nin üzerinde; fiyat bandı kaynak aralığı dışında, tahmin daha belirsiz."
+        for w in at.warning
+    )
+    assert not any(w.value == "Kaynak aralığı dışında, tahmin daha belirsiz." for w in at.warning)
+
+
+def test_explanation_text_renders_verdict_paragraph_tips_and_warning(mocked):
+    at = _run_no_photo()
+    text = at.session_state["explanation"]["text"]
+    assert len(text.splitlines()) <= 6
+    assert any(m.value.startswith("**") for m in at.markdown)
+    assert any("statik taşıma" in w.value for w in at.warning)
+    assert not any("Bina toplamı yılda yaklaşık" in w.value for w in at.warning)  # the paragraph is plain text, not a warning

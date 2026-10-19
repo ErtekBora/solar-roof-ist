@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -169,7 +170,8 @@ def test_payload_rounding():
     assert p["daire_basi_tasarruf_tl_yil"] == [round_half_up(v, 0) for v in make_result()["daire_basi_tasarruf_tl_aralik"]]
     assert all(isinstance(v, int) for v in p["daire_basi_tasarruf_tl_yil"]) and isinstance(p["daire_sayisi"], int)
     assert round_half_up(27.15, 1) == 27.2 and round_half_up(1738.72, 0) == 1739
-    assert p["engel_orani"] == 0.272
+    assert "engel_orani" not in p  # no photo: obstacles are unknown, not zero
+    assert build_payload(make_result(), make_detection(), False)["engel_orani"] == 0.272
 
 
 def test_payload_without_bill_has_tariff_and_method_but_no_coverage(result):
@@ -326,7 +328,9 @@ def test_fallback_template_passes_validation(result, detection, with_photo, demo
     ok, invalid = validate_explanation_numbers(text, build_payload(result, det, demo))
     assert ok, invalid
     lines = text.splitlines()
-    assert lines[-1] == WARNING_LINE and sum(ln.startswith("-") for ln in lines) == 5
+    assert lines[-1] == WARNING_LINE and 1 <= sum(ln.startswith("-") for ln in lines) <= 3
+    body = [ln for ln in lines[1:-1] if not ln.startswith("-")]
+    assert len(body) == 1 and len(re.findall(r"\.(?:\s|$)", body[0])) <= 5  # one short paragraph (at most 5 sentences)
     assert ("örnektir" in lines[0]) == (with_photo and demo)
 
 
@@ -349,14 +353,14 @@ def test_template_names_relocatable_obstacles_with_counts_and_never_others(resul
     "labels, expected, absent",
     [
         (("skylight", "chimney", "chimney", "chimney"), "Çatınızdaki 3 bacanın çevresindeki boşluğu", "taşı"),
-        (("skylight", "solar panel"), "kurulum firmasından teklif alın", "baca"),
-        ((), "kurulum firmasından teklif alın", "taşı"),
+        (("skylight", "solar panel"), "Ortalama daire faturasını girin", "baca"),
+        ((), "Ortalama daire faturasını girin", "taşı"),
     ],
 )
 def test_template_without_relocatable_obstacles_gives_another_recommendation(result, labels, expected, absent):
     text = build_fallback_explanation(result, make_detection(labels), False)
-    recs = [ln for ln in text.splitlines() if ln.startswith("-")][3:]
-    assert len(recs) == 2 and expected in recs[1] and absent not in recs[1]
+    tips = [ln for ln in text.splitlines() if ln.startswith("-")]
+    assert 1 <= len(tips) <= 3 and any(expected in t for t in tips) and not any(absent in t.lower() for t in tips)
     assert "taşınabilir" not in text
 
 
@@ -377,3 +381,77 @@ def test_chimney_tip_states_the_count_and_prompt_has_no_conditional_chimney_word
     assert "baca" not in build_fallback_explanation(result, make_detection(("skylight",)), False).lower()
     assert "bacalar varsa" not in explain.SYSTEM_PROMPT and "baca varsa" not in explain.SYSTEM_PROMPT
     assert "Çatınızdaki 5 bacanın" in explain.SYSTEM_PROMPT
+
+
+# ------------------------------------------------- field-name leaks, no-photo payload, terrain, conciseness
+
+def test_field_names_in_the_text_are_detected():
+    p = build_payload(make_result(bill=1500), None, False)
+    leak = "Bina toplamı (kurulabilir_guc_kwp 21,0 kWp ve yillik_uretim_kwh 28.590 kWh) bellidir."
+    assert explain.find_field_names(leak, p) == ["kurulabilir_guc_kwp", "yillik_uretim_kwh"]
+    assert explain.find_field_names("Sabit indirim yıllık 5.000 TL, kWh/kWp 1.370; ⚠️ not.", p) == []
+    assert explain.find_field_names("Bu daire_sayisi ve senaryolar alanları.", p) == ["daire_sayisi", "senaryolar"]
+    assert explain.find_field_names("", p) == [] and explain.find_field_names(WARNING_LINE, p) == []
+
+
+def test_a_leaked_field_name_triggers_the_retry_then_the_template(fake_explain):
+    r = make_result(bill=1500)
+    p = build_payload(r, None, False)
+    clean = build_fallback_explanation(r)
+    leaky = clean.replace("Bina toplamı", "Bina toplamı (yillik_uretim_kwh)")
+    client = fake_explain([leaky, clean])
+    out = explain_result(r, None, api_key="k")
+    assert out["source"] == "gemini" and out["retried"] is True and client.calls == 2
+    assert validate_explanation_numbers(out["text"], p)[0]
+    explain.clear_cache()
+    client = fake_explain([leaky, leaky])
+    out = explain_result(r, None, api_key="k")
+    assert out["source"] == "template" and client.calls == 2 and not explain.find_field_names(out["text"], p)
+
+
+def test_retry_hint_names_the_leaked_fields():
+    hint = explain._retry_hint([], ["yillik_uretim_kwh"])
+    assert "yillik_uretim_kwh" in hint and "alan adları" in hint
+
+
+def test_prompt_forbids_field_names_and_asks_for_a_short_answer():
+    prompt = explain.SYSTEM_PROMPT
+    assert "alan (anahtar) adlarını ASLA yazma" in prompt
+    assert "en fazla yaklaşık 6 cümle" in prompt and "EN FAZLA 3 pratik öneri" in prompt
+    assert "Ekranda zaten gösterilen notları tekrar etme" in prompt and "mahsuplaşma" in prompt
+
+
+def test_no_photo_payload_has_no_obstacle_numbers_even_if_the_result_carries_zero():
+    r = make_result()
+    r["engel_orani"], r["engel_alani_m2"] = 0.0, 0.0  # a stray zero must not become "obstacles: 0 %"
+    p = build_payload(r, None, False)
+    assert "engel_orani" not in p and "engel_alani_m2" not in p and p["fotograf_var"] is False
+    text = build_fallback_explanation(r)
+    assert "Engel oranı" not in text and "engellerle kaplı" not in text and "%0" not in text
+    with_photo = build_payload(r, make_detection(), False)
+    assert with_photo["engel_orani"] == 0.0 and with_photo["engel_alani_m2"] == 0.0
+
+
+def test_zero_terrain_loss_is_said_as_no_terrain_shading():
+    r = make_result()
+    r.update(golge_kaybi_yuzde=0.0, uygunluk_puani_yuzde=100.0)
+    p = build_payload(r, None, False)
+    assert "golge_kaybi_yuzde" not in p and p["arazi_golgesi"] == "yok" and p["uygunluk_puani_yuzde"] == 100
+    text = build_fallback_explanation(r)
+    assert "arazi gölgesi yok (%100)" in text and "%0" not in text
+    assert validate_explanation_numbers(text, p)[0]
+    shaded = build_payload(make_result(), None, False)
+    assert shaded["golge_kaybi_yuzde"] > 0 and "arazi_golgesi" not in shaded
+    assert "arazi gölgesi açısından uygunluk" in build_fallback_explanation(make_result())
+
+
+def test_template_is_concise_and_does_not_repeat_screen_notes():
+    from core import building_mode as bm
+
+    text = build_fallback_explanation(make_result(bill=1500))
+    lines = text.splitlines()
+    assert len(lines) <= 6 and sum(ln.startswith("-") for ln in lines) <= 3
+    for note in (bm.NETTING_NOTE, bm.SEASONAL_NOTE, bm.PHYSICAL_SHARING_NOTE, bm.LEGAL_NOTE, config.COST_SOURCE):
+        assert note not in text
+    for word in ("mahsuplaşma", "aidat", "KDV", "güçlendirme", "inverter"):
+        assert word not in text

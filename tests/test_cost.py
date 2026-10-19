@@ -92,3 +92,9 @@ def test_exclusions_and_source_are_listed():
     for word in ("güçlendirme", "inverter", "Bakım", "verim", "karar"):
         assert word in text
     assert "KDV ve kurulum dahil" in config.COST_SOURCE and config.COST_BAND_MAX_SOURCED_KWP == 20
+
+
+def test_out_of_range_flag_message_says_what_it_refers_to():
+    msg = cost.flag_message(cost.FLAG_OUT_OF_RANGE)
+    assert msg == "Maliyet: sistem 20 kWp'nin üzerinde; fiyat bandı kaynak aralığı dışında, tahmin daha belirsiz."
+    assert cost.flag_message(cost.FLAG_NO_PANELS) == "Kurulabilir panel yok."

@@ -372,8 +372,8 @@ def test_template_passes_the_number_check_for_every_structure():
 
 
 def test_template_mentions_payback_only_when_computable():
-    assert "Geri ödeme" in explain.build_fallback_explanation(analyze(bill_tl=3000.0))
-    assert "Geri ödeme" not in explain.build_fallback_explanation(analyze(bill_tl=0.05))
+    assert "geri ödeme süresi" in explain.build_fallback_explanation(analyze(bill_tl=3000.0))
+    assert "geri ödeme" not in explain.build_fallback_explanation(analyze(bill_tl=0.05))
 
 
 def test_prompt_is_building_framed():
@@ -482,4 +482,4 @@ def test_netting_note_only_with_a_bill_and_in_the_payload():
     assert analyze()["mahsuplasma_notu"] is None
     assert explain.build_payload(analyze(bill_tl=1500.0))["mahsuplasma_varsayimi"] == bm.NETTING_NOTE
     assert "mahsuplasma_varsayimi" not in explain.build_payload(analyze())
-    assert bm.NETTING_NOTE in explain.build_fallback_explanation(analyze(bill_tl=1500.0))
+    assert bm.NETTING_NOTE not in explain.build_fallback_explanation(analyze(bill_tl=1500.0))  # already on screen
