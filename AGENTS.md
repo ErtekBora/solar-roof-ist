@@ -54,7 +54,9 @@ core/solar.py             PVGIS PVcalc + printhorizon, caching, retries
 core/vision.py            Gemini roof perception (surface, obstacles, roof type, image view)
 core/yolo_client.py       HTTP client for yolo_service (optional, fail-safe)
 core/fusion.py            merge Gemini + YOLO detections
-core/calc.py              area, kWp, score, kWh, CO2, TL, confidence
+core/calc.py              usable area, tariff and bill functions, confidence
+core/building_mode.py     apartment-building mode: flat count, roof segments, equal sharing, payback
+core/cost.py              installation cost bands (numbers from config only)
 core/metrics.py           shading heatmap (month x hour), monthly chart data, Istanbul comparison
 core/explain.py           grounded Turkish explanation + number check + template fallback
 core/agent.py             Roof Agent (Gemini function calling over core tools)
@@ -98,7 +100,7 @@ tests/                    pytest, one test file per module
 - **Privacy (KVKK):** uploaded images are processed in memory only and never written to disk. Store no personal data.
 - **Attribution:** always show "© OpenStreetMap katkıcıları · Bina verisi: Overture Maps Foundation (ODbL), Microsoft ML Buildings · Güneş verisi: PVGIS (JRC)". Demo images show their source and license.
 - **No Google Maps / Google Earth imagery** anywhere in the AI pipeline (Terms of Service). Satellite tiles on the map are for display only.
-- **Numbers never come from an LLM.** Tariff, CO2 factor and all results come from config or tools. Savings use the EPDK two-tier tariff in `core/calc.py` (bill-based when the user gives a monthly bill, a wide fallback range otherwise).
+- **Numbers never come from an LLM.** Tariff, CO2 factor, installation cost bands and all results come from config or tools. Savings use the EPDK two-tier tariff in `core/calc.py`, valued PER FLAT after the production is split equally among the flats (bill-based when the user gives an average monthly flat bill, a wide fallback range otherwise).
 - **Language:** UI text in Turkish. Code, comments, docstrings and commit messages in English.
 - **Licensing:** Ultralytics (YOLOE) is AGPL-3.0, so the GitHub repo stays public. Keep a LICENSE file and credit all data sources in README.
 - **Robustness:**

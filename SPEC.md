@@ -5,13 +5,15 @@ Istanbul has a large rooftop solar potential that is almost unused. The main bar
 
 Objective: given a building in Istanbul (and optionally a roof photo), produce a trustworthy, explainable suitability assessment in seconds, using only open data and AI. No physical data collection.
 
+**Product goal (Bina modu, the unit is the APARTMENT BUILDING):** flat owners in an apartment building decide together to install ONE rooftop PV system, pay once, and share the production EQUALLY among all flats to cut their electricity bills. The building manager (or any resident) clicks the building on the map; the app uses all available data and asks the minimum. There is no single-flat framing anywhere in the UI. Public and institutional buildings are out of scope. See section 6b.
+
 ## 2. User flow
 1. User opens the app and sees a map of Istanbul (centre 40.9720, 29.0760, zoom 15, with the covered Erenköy / Suadiye / Göztepe area outlined).
 2. User clicks a building (Prototype+) or a location plus a manual roof area (Demo).
 3. Optional: the user uploads a roof photo or picks a demo image from `data/demo_images/`.
-4. Optional: the user picks the roof type (Düz / Eğimli / Bilmiyorum), the number of floors, and enters an approximate monthly electricity bill (TL).
+4. Steps in the main area after a building is found (see section 6b): (a) building summary (footprint, setback area, floors/height and its source); (b) "Daire sayısı" pre-filled with the estimate, "Tahmini — farklıysa düzeltin"; (c) a prominent "Çatı fotoğrafı yükleyin (önerilir)" step with guidance, a file uploader and "Fotoğrafsız devam et" (bundled demo photos only under "Örnek fotoğrafla dene", never applied to the real building); (d) optional: Çatı yapısı (+ "Düz teras payı" slider, pre-filled from the photo) and the average monthly flat bill; (e) "Hesapla" and the results. The sidebar only holds "Sıfırla", help and the attribution. Only the bill survives a new map click; "Sıfırla" clears it too.
 5. The app shows:
-   - result cards: score, kWp, kWh, TL range, CO2, confidence
+   - building cards (kWp, kWh, CO2, total installation cost range) and per-flat cards (one-time cost, annual savings, payback, bill coverage), plus score and confidence
    - detection overlay on the photo
    - charts: shading heatmap, monthly production, horizon
    - the AI explanation
@@ -39,7 +41,7 @@ Objective: given a building in Istanbul (and optionally a roof photo), produce a
 - **Terrain run (Demo):** `optimalangles=0`, `angle` and `aspect` = the optimal values returned by the ideal run, `usehorizon=1` (PVGIS terrain horizon)
 - **Shaded run (Prototype+):** `optimalangles=0`, same `angle`/`aspect`, `usehorizon=1`, `userhorizon=<72 comma-separated values>` where values = max(building horizon, terrain horizon)
 - Note: when `optimalangles=1`, PVGIS ignores `angle` and `aspect`. So the ideal run must come first, and its optimal angle/aspect (in the response's `inputs` section — verify the path) are reused.
-- Assumption: panels are installed at the optimal tilt and orientation. For pitched roofs the real orientation is unknown, so add this to the confidence reasons.
+- Assumption: the flat segment is installed at the optimal tilt and orientation. Pitched faces use a fixed slope and the face azimuth (**Face run:** `optimalangles=0`, `angle=DEFAULT_ROOF_PITCH_DEG` (30), `aspect=<face>`, `usehorizon=1`; one cached call per face, `core/solar.get_face_yield`).
 - Read from the response (verify field names in the docs):
   - `E_y` (kWh/kWp/yr)
   - `E_m` (12 monthly values)
@@ -84,7 +86,7 @@ Objective: given a building in Istanbul (and optionally a roof photo), produce a
 | compute_horizon | `compute_horizon(target, neighbours, terrain72=None)` | `{horizon72, main_shading_direction, max_angle_deg}` |
 | get_solar_yield | `get_solar_yield(lat, lon, horizon72=None)` | `{ideal: {...}, shaded: {...}, angle, aspect}` |
 | detect_roof_objects | `detect_roof_objects(image_bytes)` | `{roof_type, image_view, roof_area_px, obstacles[], obstacle_ratio, sources: [gemini, yolo]}` |
-| compute_capacity | `compute_capacity(roof_area_m2, obstacle_ratio, roof_type, yield_ideal, yield_shaded, monthly_bill_tl=None, image_view=None, monthly_ideal=None, monthly_shaded=None, usable_base_area_m2=None, roof_type_known=True)` | all result numbers (section 6) |
+| analyze_building | `analyze_building(roof_area_m2, usable_base_area_m2, obstacle_ratio, image_view, structure, flat_share_pct, n_flats, n_flats_estimated, bill_tl, flat_solar, faces)` (`core/building_mode.py`; replaces the removed single-roof `compute_capacity`) | all result numbers (sections 6 and 6b) |
 | run_scenario | `run_scenario(base_result, change)`, e.g. "move water tanks" → obstacle_ratio reduced | new numbers + delta |
 | optimize_layout | `optimize_layout(usable_polygon_m, scenario, exclusion_zones_m=None)` | `{panel_count, kwp, panels: [rectangles], tilt, azimuth, row_pitch_m, coverage_ratio}` |
 
@@ -139,11 +141,11 @@ Objective: given a building in Istanbul (and optionally a roof photo), produce a
      - the two roof faces face perpendicular to the ridge (two opposite azimuths)
      - tilt = `DEFAULT_ROOF_PITCH_DEG` (config, default 30°, explicit assumption shown in the UI)
   4. **Fallback:** optimal orientation (today's behaviour), with a Turkish reason.
-- **Two-face calculation (pitched, sources 2–3 without a single direction):**
-  - run PVGIS once per face (convert compass azimuth to the PVGIS aspect convention: 0 = South, −90 = East, 90 = West)
-  - each face gets half of the usable area
-  - include a face only if its specific yield ≥ 80% of the ideal (optimal) yield
-  - report both faces and which ones were used
+- **Two-face calculation (building mode uses the ridge estimate, source 3):**
+  - run PVGIS once per face (convert compass azimuth to the PVGIS aspect convention: 0 = South, −90 = East, 90 = West, 180 = North)
+  - each face gets half of the pitched PLAN area; its SURFACE area is plan ÷ cos(30°) and kWp = surface ÷ 5.5 (section 6b)
+  - include a face only if its specific yield ≥ 80% of the flat segment's SHADED specific yield (same terrain-horizon basis, `FACE_MIN_YIELD_RATIO`); a dropped face contributes 0 kWp, 0 kWh and 0 cost
+  - report both faces and which ones were used, dropped or unavailable
 - Record `yon_kaynagi` as one of `"user"`, `"osm_tag"`, `"ridge_estimate"`, `"optimal_assumed"`.
 - Unit tests:
   - ridge azimuth of a rectangle rotated 30°
@@ -159,19 +161,18 @@ Objective: given a building in Istanbul (and optionally a roof photo), produce a
 | Usable area (manual area + photo) | roof_area × 0.85 × (1 − obstacle_ratio) |
 | Usable area (no photo) | roof_area × 0.276, labelled "ortalama varsayım" in the UI |
 | obstacle_ratio | obstacle area ÷ roof area in pixels (scale-free; union of obstacle boxes/masks clipped to the roof) |
-| kWp | usable_area ÷ 6.5 (flat) or ÷ 5.5 (pitched) |
+| kWp | building mode: flat segment = flat PLAN area ÷ 6.5; pitched face = face SURFACE area (plan ÷ cos 30°) ÷ 5.5; see section 6b |
 | Suitability (%) | E_shaded ÷ E_ideal × 100 |
 | Shading loss (%) | 100 − suitability |
 | Annual kWh | kWp × E_shaded |
 | CO2 (t/yr) | kWh × 0.6345 ÷ 1000 |
-| Savings range (TL/yr) | with a monthly bill: C = kwh_from_bill(bill); for each of 12 roof-scaled shaded monthly values P: saving = bill_tl(C) − bill_tl(max(C − P × share, 0)), share 0.5 and 1.0; summed over months. Without a bill: kWh × [0.5 × LOW, 1.0 × HIGH], labelled a wide estimate |
+| Savings range (TL/yr, PER FLAT) | with an average flat bill: C = kwh_from_bill(bill); for each of 12 monthly values P = (segment-summed, shaded, roof-scaled production) ÷ N: saving = bill_tl(C) − bill_tl(max(C − P × share, 0)), share 1.0 (monthly netting); summed over months. Without a bill: (annual kWh ÷ N) × [LOW, HIGH], labelled "geniş tahmin: kademe bilinmiyor" |
 
 **Tariff and bill-based savings (Prototype P1):**
 - `LOW = 2.918965 × 1.26`, `HIGH = 4.320708 × 1.26` TL/kWh (EPDK, excluding tax × `TAX_FACTOR`, applied once); only consumption above `LIMIT` = 8 kWh/day × 30 = 240 kWh/month is billed at HIGH; `BILL_AT_LIMIT` = LIMIT × LOW ≈ 882.7 TL.
 - `bill_tl(kwh)`, `kwh_from_bill(bill)` (None, NaN or ≤ 0 → 0 kWh) and `monthly_savings(C, production, share)` are closed-form; PV offsets the HIGH-tier kWh first; surplus beyond consumption is valued at 0.
 - The production passed to the savings is ROOF-scaled: kWp × E_m of the SHADED PVGIS run (never raw E_m); the 12 values sum to the displayed annual kWh.
-- Coverage = annual savings ÷ (12 × bill), capped at 100 %. `self_used_share` = Σ min(production, C) ÷ annual production; at 100 % coverage or < 50 % self use the UI says one flat cannot use the whole production and the surplus could serve common areas or other flats.
-- Savings are for one household's own meter; formally sharing a roof system between flats is out of scope.
+- Coverage = annual savings ÷ (12 × bill), capped at 100 %, now computed on the PER-FLAT share of the production. The building mode no longer shows a "one flat cannot use the production" warning; the production is already split equally (section 6b).
 
 **Confidence:**
 - **Yüksek:** top-down photo AND ≥ 70% of neighbour heights from tags, i.e. `height_source in ("height_tag", "levels_tag")`. Both count, because most Istanbul buildings in OSM only have `building:levels`.
@@ -179,6 +180,8 @@ Objective: given a building in Istanbul (and optionally a roof photo), produce a
 - **Düşük:** no photo AND most heights are defaults
 
 In the Demo stage (no building data yet), confidence depends on the photo only: top-down = Orta, oblique or no photo = Düşük.
+
+**Building mode confidence** (section 6b): same base as P1 below (polygon or top-down photo → Orta, otherwise Düşük); roof structure "Bilmiyorum" drops one level; a user-set Karma counts as known; a pitched face whose PVGIS call failed (and that the chosen structure uses) drops one level; never below Düşük. Hints may include "Daire sayısını kontrol edin", "Ortalama daire faturasını girin", "Çatı yapısını seçin", "Çatı fotoğrafı yükleyin". Flat count and bill do not change the level.
 
 **Prototype P1 confidence** (only inputs that change a shown result count; replaces the height-based rule above until P2):
 - building polygon (with or without a usable top-down photo) → Orta; manual area without photo → Düşük; manual area with a top-down photo → Orta; Yüksek stays unreachable until P2 neighbour shading.
@@ -196,6 +199,40 @@ For pitched roofs, `"optimal_assumed"` prevents "Yüksek" confidence.
 
 Always list the reasons for the confidence level.
 
+## 6b. Building mode (Bina modu)
+Added after the Prototype P1 work; the unit is the apartment building. Pure, separately tested functions: `estimate_flat_count`, `compute_segments`, `estimate_install_cost`, `allocate_equal_share`, `payback_range` (`core/building_mode.py`, `core/cost.py`). The Roof Agent will call them later.
+
+**Inputs (sidebar, stable widget keys, always rendered).**
+- *Daire sayısı* (N, min 1): pre-filled `floors = num_floors if known else max(1, round(height_m / 3))`; `N = max(1, round(floors × footprint_area_m2 / FLAT_GROSS_AREA_M2))`, `FLAT_GROSS_AREA_M2 = 120` (assumption: gross area per flat including walls and stairs). Shown as "Tahmini (kat sayısı × taban alanı ÷ 120 m²) — lütfen kontrol edin" until edited. N is clamped to ≥ 1 in every function that divides by it.
+- *Ortalama aylık daire faturası (TL)*: optional, no default. No installation quote and no common-area bill are asked.
+- *Çatı yapısı*: Tamamen düz / Tamamen eğimli / Karma (teras + eğimli) / Bilmiyorum (default). Karma shows the slider "Düz teras payı (%)" (0–100, step 5, default 50). A roof photo may pre-select flat / pitched / Karma at 50 % but never "Bilmiyorum"; a bundled demo photo is never applied to a real building.
+- Flow: steps (d) and (e) appear once a photo is uploaded, a demo is tried or "Fotoğrafsız devam et" is pressed; the photo step restarts for every new building. Widgets of hidden steps lose their state, so the bill is mirrored in a plain session key and restored before its widget is created.
+- Persistence: only the bill persists across map clicks. A different building id re-estimates N, resets the structure to "Bilmiyorum" and the slider to 50, set in `st.session_state` before the widgets are created. No per-building edits are stored. "Sıfırla" clears all of it including the bill. Structure, slider, N and bill changes recompute from the session state with no PVGIS call.
+
+**Roof segments and capacity.** Usable PLAN area (setback + usable-share/photo logic as before) is split into a flat segment (plan × flat share) and a pitched segment (plan × (1 − flat share)).
+- Flat segment: `kWp = flat plan area ÷ 6.5` (6.5 m²/kWp is per PLAN area, row spacing included); PVGIS optimal tilt/aspect (the existing `get_solar_yield` run).
+- Pitched segment: ridge along the long axis of the footprint's `minimum_rotated_rectangle` (EPSG:32635); two faces with azimuths perpendicular to the ridge; slope `DEFAULT_ROOF_PITCH_DEG` (30). Each face gets half the pitched PLAN area; `face surface = face plan ÷ cos 30°`; `face kWp = surface ÷ 5.5` (5.5 m²/kWp is per SURFACE area, panels flush with the roof). North-based azimuth → PVGIS aspect (0 = S, 90 = W, −90 = E). Without a footprint (manual area) an N–S ridge is assumed (`DEFAULT_RIDGE_AZIMUTH_DEG = 0`, East/West faces).
+- A face below 80 % of the flat segment's shaded specific yield is dropped: "Kuzeye bakan çatı yüzü verimsiz olduğu için hesaba katılmadı". Dropped: 0 kWp, 0 kWh, 0 cost, its area simply unused.
+- "Bilmiyorum": both extremes (100 % flat, 100 % pitched) are computed; kWp, kWh, cost, savings and payback are ranges `[min, max]` over the scenarios (never assuming which is larger); confidence drops one level.
+- On every "Hesapla": the flat segment (2 cached PVGIS calls: optimal + terrain) and both faces (1 cached call each) run in parallel. If a face call fails after the retries, the other segments are used and "Bir çatı yüzü için güneş verisi alınamadı; sonuç eksik olabilir" is shown (face marked unavailable). If the flat call fails, the existing error is shown.
+- Totals and the 12 monthly kWh values are sums over the used segments; the monthly chart stacks the segments (grouped per scenario for "Bilmiyorum").
+
+**Installation cost tool** (`core/cost.py`, numbers ONLY from config). `COST_SOURCE` = "Satıcı fiyat sayfaları, 2026 (KDV ve kurulum dahil; panel, inverter, konstrüksiyon, kablolama, proje ve EDAŞ başvurusu). Gerçek fiyat teklifle netleşir." `COST_BANDS_TL_PER_KWP`, derived from published 2026 totals (5 kWp 120,000–180,000 TL; 10 kWp 220,000–320,000 TL; 15–20 kWp 350,000–550,000 TL): kWp < 7.5 → 24,000–36,000 TL/kWp; 7.5 ≤ kWp < 12.5 → 22,000–32,000; kWp ≥ 12.5 → 17,500–36,700. `COST_BAND_MAX_SOURCED_KWP = 20`: above it the last band is kept and flagged "kaynak aralığı dışında, tahmin daha belirsiz".
+- `estimate_install_cost(kwp) → (cost_low, cost_high, band, flags)` for ONE kWp value; kWp ≤ 0 → `(0, 0, None, ["kurulabilir panel yok"])`.
+- Several scenarios: call it once per scenario and combine: total range = `[min of all cost_low, max of all cost_high]`. Per-flat range = total ÷ N.
+- Always listed exclusions: çatı güçlendirme (eski binalarda), ~10–12 yılda bir inverter değişimi, bakım, panel verim kaybı, kat malikleri karar süreci.
+
+**Equal sharing, savings, payback** (mesken tariff, existing `bill_tl`, `kwh_from_bill`, `monthly_savings`). Each month the production (shaded PVGIS run, roof-scaled, used segments only) is split equally among N flats (equal kWh per flat), and the money is shared as an EQUAL TL DISCOUNT per flat (everyone pays the installation equally).
+- With a bill, **monthly netting (aylık mahsuplaşma), share = 1.0 only**: `C = kwh_from_bill(bill)`; building monthly savings = `N × monthly_savings(C, production_m ÷ N, 1.0)` (the month's production offsets that month's consumption up to the consumption; surplus 0 TL); summed to a year; the fixed discount per flat = yearly total ÷ N ("Daire başına sabit indirim", shown as TL/yıl and as the yearly average TL/ay). There is no 0.5 lower bound; the displayed ranges come only from the roof-structure scenarios and the cost bands. Shown: "Aylık mahsuplaşma varsayımıyla hesaplanmıştır." and "Daire başına faturanın yaklaşık %X–%Y kadarı karşılanır" (cap 100 %) with the remaining average monthly bill range.
+- Notes under the card: "Yıllık ortalamadır; kışın daha az, yazın daha fazla indirim olur ve indirim faturayı aşamaz." and "Fiziksel paylaşımda (her daireye eşit kWh) tüketimi yüksek daireler kademe farkı nedeniyle biraz daha fazla kazanır. Herkes kurulumu eşit ödediği için tasarrufun yönetim tarafından aidattan eşit düşülmesi önerilir; bu, sistemin ortak sayaca bağlandığı yaygın uygulamayla da uyumludur." Individual flat bills are never asked for.
+- Assumption (shown under the savings card and passed to the explainer): "Girilen fatura yılın her ayı için ortalama tüketim kabul edilmiştir; mevsimsel farklar (klima, ısıtıcı) dikkate alınmamıştır. Yaz aylarındaki fazla üretim 0 TL sayıldığı için tasarruf ihtiyatlı hesaplanmıştır."
+- Without a bill: per-flat savings = (annual kWh ÷ N) × [LOW, HIGH] (tax included once; monthly netting removes the self-use uncertainty, only the tariff tier is unknown), labelled "geniş tahmin: kademe bilinmiyor".
+- `payback_range(cost_low, cost_high, sav_low, sav_high)`: `low = cost_low ÷ sav_high`, `high = cost_high ÷ sav_low` (per flat). A savings bound below 1 TL/yr gives None for that bound ("hesaplanamaz (tasarruf çok düşük)"); a payback above `PAYBACK_MAX_YEARS` (50) is also None, so the UI never shows absurd years; both None hides the card and says why. Never raises. The payback ignores degradation, maintenance and tariff changes.
+- Building cards: total kWp, annual kWh, CO₂, total cost range. Per-flat cards: one-time cost, annual savings, payback, coverage (only with a bill).
+- Legal note, always visible: "Üretimin dairelere eşit paylaştırılması mevzuata, kat malikleri kararına ve dağıtım şirketinin onayına tabidir. En yaygın uygulama sistemin ortak alan sayacına bağlanmasıdır; bu durumda ortak alan tüketimini aşan üretim değerlendirilemeyebilir ve geri ödeme uzar."
+
+**Explainer.** The payload carries: roof structure and shares, segments used/dropped/unavailable, N and whether it is estimated, building kWp/kWh/CO₂, total and per-flat cost range, per-flat savings range, payback range or "hesaplanamaz", coverage range and the constant-consumption assumption (with a bill), the cost band and its flags. The LLM computes nothing; the number check applies. Forbidden words: "maliyet" and "yatırım" are allowed only when a cost range is in the payload; "amorti" and "geri ödeme" only when a numeric payback range is in the payload; the rest of `FINANCIAL_TERMS` stays forbidden.
+
 ## 7. AI components
 - **Perception prompt:**
   - find "roof surface" plus obstacles: water tank, air conditioner unit, chimney, solar panel, satellite dish, skylight, other
@@ -212,7 +249,7 @@ Always list the reasons for the confidence level.
   - The UI shows an editable confirmation table.
 - **Roof Agent:**
   - system prompt: Turkish-speaking solar advisor; must call tools for every number; must state assumptions; never ask for personal data
-  - typical order: get_building → compute_horizon → get_solar_yield → detect_roof_objects (if photo) → optimize_layout (per scenario) → compute_capacity
+  - typical order: get_building → compute_horizon → get_solar_yield → detect_roof_objects (if photo) → optimize_layout (per scenario) → analyze_building
   - **scenario role (MVP):**
     - the agent decides which layout scenarios to run: flat → optimal tilt vs low tilt; pitched → which faces to use
     - it calls optimize_layout once per scenario and compares panel count, kWp and annual kWh
@@ -247,7 +284,7 @@ Always list the reasons for the confidence level.
   - **Kenar boşluğu:** `SETBACK_M` (Varsayım).
   - **Elektrik tarifesi:** LOW / HIGH TL/kWh incl. tax, `TARIFF_SOURCE`, tax factor approximate (Varsayım).
   - **Aylık fatura / Tasarruf aralığı:** bill-based (Kullanıcı girdisi) or wide estimate when consumption is unknown.
-  - **Tasarruf kapsamı:** one household's own meter; surplus production counts as 0 TL; sharing a roof between flats is out of scope.
+  - **Daire sayısı, Çatı yapısı, Paylaşım, Kurulum maliyeti, Geri ödeme, Tüketim varsayımı:** see section 6b; each row carries its status tag and source. Surplus production beyond a flat's consumption counts as 0 TL.
 - **Map layers:**
   - OSM (default)
   - satellite tiles (display only)
@@ -255,6 +292,8 @@ Always list the reasons for the confidence level.
   - demo buildings coloured by score
 
 ## 9. Output JSON (keys in Turkish, used by UI, agent and explainer)
+Building mode adds: `cati_yapisi, duz_pay_yuzde, daire_sayisi, daire_sayisi_tahmini, senaryolar[] (segmentler[], kwp, kwh, aylik_kwh[12], maliyet_tl, paylasim), kurulabilir_guc_kwp_aralik, yillik_uretim_kwh_aralik, co2_ton_yil_aralik, toplam_maliyet_tl_aralik, daire_basi_maliyet_tl_aralik, daire_basi_tasarruf_tl_aralik, geri_odeme_yil_aralik, fatura_karsilama_yuzde_aralik, kalan_fatura_tl_ay_aralik, tuketim_varsayimi, maliyet_bayraklari, uyarilar`.
+
 `bina_id, lat, lon, cati_tipi, goruntu_turu, toplam_cati_alani_m2, engel_orani, engel_alani_m2, kullanilabilir_alan_m2, kurulabilir_guc_kwp, ideal_uretim_kwh_kwp, golgeli_uretim_kwh_kwp, yillik_isinim_kwh_m2, istanbul_ort_kiyas_yuzde, sicaklik_kaybi_yuzde, golge_kaybi_yuzde, ana_golge_yonu, uygunluk_puani_yuzde, yillik_uretim_kwh, aylik_uretim_kwh[12], yillik_tasarruf_tl_aralik[2], co2_ton_yil, ufuk_cizgisi_72[72], yukseklik_kaynaklari{}, panel_egimi_derece, panel_yonu_derece, yon_kaynagi, cati_yuzleri[], egim_senaryolari[], panel_sayisi, panel_yerlesimi[], onerilen_senaryo, varsayimlar[], guven_seviyesi, guven_nedenleri[], tespitler[], yz_aciklama_raporu, yz_adimlari[]`
 
 ## 10. Stages and acceptance criteria

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from core import calc, config, explain
+from core.building_mode import analyze_building, face_specs
 from core.formatting import round_half_up
 from core.explain import (
     WARNING_LINE,
@@ -18,13 +19,22 @@ from core.explain import (
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
-def make_result():
-    r = calc.compute_capacity(150.0, 0.2715, "flat", 1372.68, 1369.8, image_view="oblique")
-    r.update(
-        lat=41.015, lon=28.979, yillik_isinim_kwh_m2=1738.72, sicaklik_kaybi_yuzde=6.49,
-        panel_egim_derece=33, panel_yon_derece=8, ufuk_cizgisi_72=[0.0] * 72,
-        aylik_uretim_kwh=[1.0] * 12, aylik_ideal_kwh=[1.0] * 12,
+E_M = [60, 75, 105, 130, 150, 160, 170, 160, 130, 100, 70, 55]
+
+
+def _pv(e_y):
+    k = e_y / sum(E_M)
+    return {"e_y": float(e_y), "e_m": [m * k for m in E_M], "h_i_y": 1738.72, "l_tg": -6.49, "l_total": -21.0, "angle": 33, "aspect": 8}
+
+
+def make_result(bill=None, structure="flat", n_flats=6, estimated=False):
+    solar = {"ideal": _pv(1372.68), "shaded": _pv(1369.8), "angle": 33, "aspect": 8}
+    faces = [{**spec, "solar": _pv(1250)} for spec in face_specs(0)]
+    r = analyze_building(
+        roof_area_m2=150.0, usable_base_area_m2=None, obstacle_ratio=0.2715, image_view="oblique", structure=structure,
+        flat_share_pct=50, n_flats=n_flats, n_flats_estimated=estimated, bill_tl=bill, flat_solar=solar, faces=faces,
     )
+    r.update(lat=41.015, lon=28.979)
     return r
 
 
@@ -155,9 +165,9 @@ def test_payload_rounding():
     p = build_payload(make_result(), None, False)
     assert p["yillik_isinim_kwh_m2"] == 1739 and isinstance(p["yillik_isinim_kwh_m2"], int)
     assert p["golgeli_uretim_kwh_kwp"] == 1370 and isinstance(p["yillik_uretim_kwh"], int)
-    assert p["sicaklik_kaybi_yuzde"] == 6.5 and p["kurulabilir_guc_kwp"] == 14.3
-    assert p["yillik_tasarruf_tl_aralik"] == [35996, 106564]  # fallback range 35995.9 / 106563.63, whole TL
-    assert all(isinstance(v, int) for v in p["yillik_tasarruf_tl_aralik"])
+    assert p["sicaklik_kaybi_yuzde"] == 6.5 and p["kurulabilir_guc_kwp"] == 14.3  # 150 x .85 x (1 - .2715) / 6.5
+    assert p["daire_basi_tasarruf_tl_yil"] == [round_half_up(v, 0) for v in make_result()["daire_basi_tasarruf_tl_aralik"]]
+    assert all(isinstance(v, int) for v in p["daire_basi_tasarruf_tl_yil"]) and isinstance(p["daire_sayisi"], int)
     assert round_half_up(27.15, 1) == 27.2 and round_half_up(1738.72, 0) == 1739
     assert p["engel_orani"] == 0.272
 
@@ -170,12 +180,13 @@ def test_payload_without_bill_has_tariff_and_method_but_no_coverage(result):
 
 
 def test_payload_with_bill_carries_coverage_and_self_use():
-    r = calc.compute_capacity(150.0, 0.2715, "flat", 1372.68, 1369.8, 1500, image_view="oblique")
+    r = make_result(bill=1500, n_flats=6)
     p = build_payload(r, None, False)
     assert p["tasarruf_yontemi"] == "fatura" and p["fatura_tl_ay"] == 1500
-    assert p["fatura_karsilama_yuzde_aralik"] == [100, 100] and p["kendi_kullanim_orani_yuzde"] == 22
+    assert 0 < p["fatura_karsilama_yuzde_aralik"] <= 100 and "kendi_kullanim_orani_yuzde" not in p
     assert p["tuketim_kwh_ay"] == 353
-    text = "Faturanızın %100 kadarını karşılar; üretimin %22 kadarı dairenizde kullanılır."
+    assert p["mahsuplasma_varsayimi"] == "Aylık mahsuplaşma varsayımıyla hesaplanmıştır."
+    text = f"Daire başına faturanın yaklaşık %{p['fatura_karsilama_yuzde_aralik']} kadarı karşılanır."
     assert validate_explanation_numbers(text, p) == (True, [])
 
 
@@ -189,7 +200,7 @@ def test_payload_strips_large_fields_and_counts_obstacles(payload):
     for key in ("ufuk_cizgisi_72", "aylik_uretim_kwh", "aylik_ideal_kwh", "roof_polygon_px", "lat", "lon"):
         assert key not in payload
     assert payload["engel_sayilari"] == {"Çatı penceresi": 2, "Uydu çanağı": 1, "Klima": 1, "Baca": 1}
-    assert payload["goruntu_turu"] == "oblique" and payload["cati_tipi"] == "flat"
+    assert payload["goruntu_turu"] == "oblique" and payload["cati_yapisi"] == "Tamamen düz"
     assert payload["demo_photo"] is True and payload["fotograf_var"] is True
 
 
@@ -338,8 +349,8 @@ def test_template_names_relocatable_obstacles_with_counts_and_never_others(resul
     "labels, expected, absent",
     [
         (("skylight", "chimney", "chimney", "chimney"), "Çatınızdaki 3 bacanın çevresindeki boşluğu", "taşı"),
-        (("skylight", "solar panel"), "kurulum firmasından görüş alın", "baca"),
-        ((), "kurulum firmasından görüş alın", "taşı"),
+        (("skylight", "solar panel"), "kurulum firmasından teklif alın", "baca"),
+        ((), "kurulum firmasından teklif alın", "taşı"),
     ],
 )
 def test_template_without_relocatable_obstacles_gives_another_recommendation(result, labels, expected, absent):

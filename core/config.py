@@ -8,6 +8,12 @@ from pathlib import Path
 CO2_FACTOR_T_PER_MWH = 0.6345  # ETKB TUESEF 2021, tCO2/MWh
 USABLE_RATIO_NO_PHOTO = 0.276  # Ember
 EDGE_FACTOR = 0.85
+FLAT_GROSS_AREA_M2 = 120  # assumption: gross area per flat incl. walls and stairs (flat-count estimate)
+DEFAULT_ROOF_PITCH_DEG = 30  # assumption: slope of both pitched faces
+FACE_MIN_YIELD_RATIO = 0.8  # a pitched face below this share of the flat segment's shaded yield is dropped
+DEFAULT_RIDGE_AZIMUTH_DEG = 0  # manual-area flow only: no footprint, so an assumed N-S ridge (East/West faces)
+FLAT_SHARE_DEFAULT_PCT = 50  # default of the "Düz teras payı" slider
+PAYBACK_MAX_YEARS = 50  # a payback bound above this is treated as not computable
 M2_PER_KWP_FLAT = 6.5
 M2_PER_KWP_PITCHED = 5.5
 LEVEL_HEIGHT_M = 3
@@ -31,6 +37,20 @@ TARIFF_LOW_TL_PER_KWH_EXCL_TAX = 2.918965  # 49.4065 + 242.4900 kr/kWh
 TARIFF_HIGH_TL_PER_KWH_EXCL_TAX = 4.320708  # 189.5808 + 242.4900 kr/kWh
 TIER_LIMIT_KWH_PER_DAY = 8  # monthly limit = 8 x 30 = 240 kWh for bill inversion
 TAX_FACTOR = 1.26  # 5% BTV then 20% KDV, approximate
+
+# Installation cost (numbers only from here; the cost tool never invents prices)
+COST_SOURCE = (
+    "Satıcı fiyat sayfaları, 2026 (KDV ve kurulum dahil; panel, inverter, konstrüksiyon, kablolama, proje ve EDAŞ "
+    "başvurusu). Gerçek fiyat teklifle netleşir."
+)
+# (exclusive upper kWp limit, TL/kWp low, TL/kWp high); derived from published 2026 totals:
+# 5 kWp 120,000-180,000 TL; 10 kWp 220,000-320,000 TL; 15-20 kWp 350,000-550,000 TL
+COST_BANDS_TL_PER_KWP = (
+    (7.5, 24000, 36000),
+    (12.5, 22000, 32000),
+    (float("inf"), 17500, 36700),
+)
+COST_BAND_MAX_SOURCED_KWP = 20  # above it the last band is kept and flagged as less certain
 
 # Model IDs verified with client.models.list()
 VISION_MODEL = "gemini-3.8-flash"

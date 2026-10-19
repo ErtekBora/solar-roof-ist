@@ -8,7 +8,7 @@ from pyproj import Transformer
 from streamlit.testing.v1 import AppTest
 
 import app
-from core import buildings, calc, config, explain, solar
+from core import building_mode, buildings, calc, config, explain, solar
 from core.solar import _parse_pvcalc
 
 ROOT = Path(__file__).parent.parent
@@ -16,9 +16,10 @@ FIXTURES = Path(__file__).parent / "fixtures"
 SAMPLE = FIXTURES / "buildings_sample.parquet"
 TO_WGS = Transformer.from_crs("EPSG:32635", "EPSG:4326", always_xy=True)
 OUT_OF_COVERAGE = (41.015, 28.979)  # old map centre, outside the prototype bbox -> manual-area flow
-BILL_LABEL = "Aylık elektrik faturanız yaklaşık kaç TL?"
-FLOORS_LABEL = "Bina kat sayısı (isteğe bağlı)"
-ROOF_LABEL = "Çatı tipi"
+BILL_LABEL = "Ortalama aylık daire faturası (TL)"
+FLATS_LABEL = "Daire sayısı"
+ROOF_LABEL = "Çatı yapısı"
+SHARE_LABEL = "Düz teras payı (%)"
 
 
 def _fake_yield(lat, lon, horizon72=None):
@@ -27,10 +28,24 @@ def _fake_yield(lat, lon, horizon72=None):
     return {"ideal": ideal, "shaded": shaded, "angle": ideal["angle"], "aspect": ideal["aspect"]}
 
 
+def _fake_face(lat, lon, aspect, angle=30, horizon72=None):
+    """A pitched face: 93 % of the flat shaded yield, a north-ish face (|aspect| > 135) 55 %."""
+    shaded = _parse_pvcalc(json.loads((FIXTURES / "pvgis_terrain.json").read_text(encoding="utf-8")))
+    k = 0.55 if abs(aspect) > 135 else 0.93
+    return {**shaded, "e_y": shaded["e_y"] * k, "e_m": [m * k for m in shaded["e_m"]], "angle": angle, "aspect": aspect}
+
+
+def _bundle(ridge=0.0):
+    specs = building_mode.face_specs(ridge)
+    return {"solar": _fake_yield(41.0, 29.0), "faces": [{**s, "solar": _fake_face(41.0, 29.0, s["aspect"])} for s in specs]}
+
+
 @pytest.fixture
 def mocked(monkeypatch):
     monkeypatch.setattr(app, "get_solar_yield", _fake_yield)
     monkeypatch.setattr(solar, "get_solar_yield", _fake_yield)  # AppTest re-executes app.py
+    monkeypatch.setattr(app, "get_face_yield", _fake_face)
+    monkeypatch.setattr(solar, "get_face_yield", _fake_face)
     monkeypatch.setattr(config, "BUILDINGS_PARQUET", SAMPLE)
     monkeypatch.setattr(config, "get_gemini_api_key", lambda: "test-key")  # never read the real secrets file
     st.cache_resource.clear()  # the building index is cached per process
@@ -59,49 +74,83 @@ def _widget(elements, label):
 
 
 def test_calculate_builds_result(mocked):
-    r = app.calculate(41.015, 28.979, 150.0, "flat")
+    r = app.calculate(41.015, 28.979, 150.0, "flat", n_flats=3)
     assert r["uygunluk_puani_yuzde"] == pytest.approx(99.79, abs=0.01)
     assert r["yillik_isinim_kwh_m2"] == pytest.approx(1738.72)
     assert r["sicaklik_kaybi_yuzde"] == pytest.approx(6.49)
-    assert len(r["aylik_uretim_kwh"]) == 12 and len(r["aylik_ideal_kwh"]) == 12
+    assert len(r["senaryolar"][0]["aylik_kwh"]) == 12 and r["daire_sayisi"] == 3
     assert r["tasarruf_yontemi"] == "genis_tahmin"
     assert app.calculate(41.015, 28.979, 150.0, "flat", 1500)["tasarruf_yontemi"] == "fatura"
 
 
-def _run_with_point(point=OUT_OF_COVERAGE):
+def _button(at, label):
+    return next(b for b in at.button if b.label == label)
+
+
+def _run_with_point(point=OUT_OF_COVERAGE, skip=True):
+    """Open the app on a point; by default also press 'Fotoğrafsız devam et' so the later steps are visible."""
     at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=30)
     if point:
         at.session_state["selected_point"] = point
-    return at.run()
+    at.run()
+    if point and skip:
+        _button(at, "Fotoğrafsız devam et").click().run()
+    return at
 
 
-def test_button_without_point_shows_error(mocked):
+def test_nothing_to_calculate_without_a_point(mocked):
     at = _run_with_point(point=None)
-    at.button[0].click().run()
-    assert any("konum" in e.value for e in at.error)
+    assert not [b for b in at.button if b.label == "Hesapla"] and not at.exception
     assert "result" not in at.session_state
+
+
+def test_hesapla_appears_only_after_the_photo_step(mocked, building_point):
+    at = _run_with_point(building_point, skip=False)
+    assert not [b for b in at.button if b.label == "Hesapla"]
+    assert not [n for n in at.number_input if n.label == BILL_LABEL] and not [r for r in at.radio if r.label == ROOF_LABEL]
+    titles = [h.value for h in at.subheader]
+    assert titles[:2] == ["Daire sayısı", app.PHOTO_STEP_TITLE]  # building summary, then the flat count, then the photo
+    assert app.PHOTO_GUIDANCE in [m.value for m in at.markdown] and app.PHOTO_BENEFIT in [c.value for c in at.caption]
+    _button(at, "Fotoğrafsız devam et").click().run()
+    assert [b for b in at.button if b.label == "Hesapla"] and [r for r in at.radio if r.label == ROOF_LABEL]
+    assert any("Fotoğrafsız devam ediliyor" in c.value for c in at.caption)
+    assert not [b for b in at.button if b.label == "Fotoğrafsız devam et"]
+
+
+def test_building_summary_shows_footprint_setback_height_and_source(mocked, building_point):
+    at = _run_with_point(building_point, skip=False)
+    assert any("Bina bulundu: taban alanı" in s.value and "kenar boşluğu" in s.value for s in at.success)
+    assert any(c.value.startswith(("Kat sayısı verisi", "Kat sayısı verisi yok")) and "Bina yüksekliği:" in c.value for c in at.caption)
+
+
+def test_sidebar_keeps_only_global_things(mocked, building_point):
+    at = _run_with_point(building_point, skip=False)
+    assert [b.label for b in at.sidebar.button] == ["Sıfırla"]
+    assert not at.sidebar.number_input and not at.sidebar.radio
+    assert app.ATTRIBUTION in [c.value for c in at.sidebar.caption]
 
 
 def test_no_sidebar_tariff_input_and_calculation_runs_without_a_bill(mocked):
     at = _run_with_point()
     assert not any("tarife" in n.label.lower() for n in at.number_input)
     assert not any("tarife" in w.value for w in at.warning)
-    at.button[0].click().run()
+    _button(at, "Hesapla").click().run()
     assert not at.exception and not at.error
     assert at.session_state["result"]["tasarruf_yontemi"] == "genis_tahmin"
 
 
 def test_full_flow_shows_cards_and_keeps_result(mocked, monkeypatch):
     at = _run_with_point()
-    at.button[0].click().run()
+    _button(at, "Hesapla").click().run()
     assert not at.exception
     labels = [m.label for m in at.metric]
-    assert "Uygunluk (arazi gölgesi)" in labels
-    assert len(labels) == 9
+    assert "Uygunluk (arazi gölgesi)" in labels and "Toplam kurulum maliyeti" in labels
+    assert len(labels) == 13  # 4 building cards, 3 per-flat cards (no bill), 6 others
     # a rerun without the button must not call PVGIS again
     monkeypatch.setattr(solar, "get_solar_yield", lambda *a, **k: pytest.fail("PVGIS called on rerun"))
+    monkeypatch.setattr(solar, "get_face_yield", lambda *a, **k: pytest.fail("PVGIS called on rerun"))
     at.run()
-    assert len(at.metric) == 9
+    assert len(at.metric) == 13
 
 
 def test_attribution_text(mocked):
@@ -117,38 +166,37 @@ def test_attribution_text(mocked):
 @pytest.fixture
 def spy_capacity(monkeypatch):
     calls = []
-    real = calc.compute_capacity
+    real = building_mode.analyze_building
 
-    def spy(*args, **kwargs):
-        calls.append({"args": args, "kwargs": kwargs})
-        return real(*args, **kwargs)
+    def spy(**kwargs):
+        calls.append(kwargs)
+        return real(**kwargs)
 
-    monkeypatch.setattr(calc, "compute_capacity", spy)  # app.py re-imports it on every AppTest run
+    monkeypatch.setattr(building_mode, "analyze_building", spy)  # app.py looks it up on every call
     return calls
 
 
 def test_building_found_uses_the_footprint_and_setback_area(mocked, spy_capacity, sample_index, building_point):
     at = _run_with_point(building_point)
     assert any("Bina bulundu" in s.value for s in at.success)
-    manual = _widget(at.number_input, "Bina bulunamazsa kullanılacak çatı alanı (m²)")
-    manual.set_value(999.0)
-    at.button[0].click().run()
+    assert not [n for n in at.number_input if n.label.startswith("Bina bulunamazsa")]  # manual area only without a building
+    _button(at, "Hesapla").click().run()
     assert not at.exception
     found = buildings.find_building(sample_index, *building_point)["building"]
     call = spy_capacity[-1]
-    assert call["args"][0] == pytest.approx(found["area_m2"]) and call["args"][0] != 999.0
-    assert call["kwargs"]["usable_base_area_m2"] == pytest.approx(found["setback_area_m2"])
-    assert call["kwargs"]["roof_type_known"] is False  # no photo: "Bilmiyorum"
-    assert at.session_state["result"]["guven_seviyesi"] == "Düşük"  # polygon + unknown roof type
-    rows = at.dataframe[0].value
+    assert call["roof_area_m2"] == pytest.approx(found["area_m2"])
+    assert call["usable_base_area_m2"] == pytest.approx(found["setback_area_m2"])
+    assert call["structure"] == "unknown"  # nothing chosen: "Bilmiyorum"
+    assert at.session_state["result"]["guven_seviyesi"] == "Düşük"  # polygon + unknown roof structure
+    rows = at.dataframe[-1].value
     assert "Ölçüm/veri" in set(rows[rows["Değer"] == "Çatı alanı"]["Durum"])
     assert {"Kenar boşluğu", "Bina yüksekliği"} <= set(rows["Değer"])
 
 
 def test_known_roof_type_with_a_building_is_orta(mocked, building_point):
     at = _run_with_point(building_point)
-    at.button[0].click().run()
-    _widget(at.radio, ROOF_LABEL).set_value("Düz").run()
+    _button(at, "Hesapla").click().run()
+    _widget(at.radio, ROOF_LABEL).set_value("Tamamen düz").run()
     assert at.session_state["result"]["guven_seviyesi"] == "Orta"
 
 
@@ -156,17 +204,17 @@ def test_building_not_found_message_and_manual_area(mocked, spy_capacity):
     at = _run_with_point((40.9501, 29.0501))  # inside the bbox, far from the fixture buildings
     assert any("15 m" in i.value for i in at.info)
     _widget(at.number_input, "Bina bulunamazsa kullanılacak çatı alanı (m²)").set_value(222.0)
-    at.button[0].click().run()
+    _button(at, "Hesapla").click().run()
     call = spy_capacity[-1]
-    assert call["args"][0] == 222.0 and call["kwargs"]["usable_base_area_m2"] is None
+    assert call["roof_area_m2"] == 222.0 and call["usable_base_area_m2"] is None
     assert not at.exception
 
 
 def test_out_of_coverage_message_and_manual_flow(mocked):
     at = _run_with_point(OUT_OF_COVERAGE)
     assert any("Erenköy" in i.value and "Göztepe" in i.value for i in at.info)
-    at.button[0].click().run()
-    assert not at.exception and len(at.metric) == 9
+    _button(at, "Hesapla").click().run()
+    assert not at.exception and len(at.metric) == 13
 
 
 def test_loader_returning_none_warns_and_manual_flow_still_works(mocked, monkeypatch, building_point):
@@ -174,8 +222,8 @@ def test_loader_returning_none_warns_and_manual_flow_still_works(mocked, monkeyp
     at = _run_with_point(building_point)
     assert not at.exception
     assert any("Bina verisi yüklenemedi; çatı alanını elle girerek devam edebilirsiniz" in w.value for w in at.warning)
-    at.button[0].click().run()
-    assert not at.exception and len(at.metric) == 9
+    _button(at, "Hesapla").click().run()
+    assert not at.exception and len(at.metric) == 13
 
 
 def test_first_page_load_without_a_click_does_not_crash(mocked):
@@ -240,7 +288,7 @@ def map_calls(monkeypatch):
 
 def test_center_and_zoom_are_passed_only_on_the_rerun_after_a_building_is_found(mocked, map_calls, building_point):
     calls, _ = map_calls
-    at = _run_with_point(building_point)
+    at = _run_with_point(building_point, skip=False)
     first = calls[-1]
     assert first["zoom"] == 18 and first["center"] is not None
     assert first["returned_objects"] == ["last_clicked"] and first["key"] == "map"
@@ -254,7 +302,7 @@ def test_center_and_zoom_are_passed_only_on_the_rerun_after_a_building_is_found(
 def test_a_new_click_clears_the_previous_results(mocked, map_calls, building_point):
     calls, box = map_calls
     at = _run_with_point(building_point)
-    at.button[0].click().run()
+    _button(at, "Hesapla").click().run()
     assert "analysis" in at.session_state and "explanation" in at.session_state
     box["value"] = {"last_clicked": {"lat": building_point[0], "lng": building_point[1]}}
     at.run()  # the same point again is not a new click
@@ -274,9 +322,16 @@ def spy_gemini(monkeypatch, fake_explain):
 
 def _after_hesapla(building_point):
     at = _run_with_point(building_point)
-    at.button[0].click().run()
+    _button(at, "Hesapla").click().run()
     assert not at.exception
     return at
+
+
+def _no_pvgis(monkeypatch):
+    fail = lambda *a, **k: pytest.fail("PVGIS called on a widget change")
+    monkeypatch.setattr(solar, "get_solar_yield", fail)
+    monkeypatch.setattr(solar, "get_face_yield", fail)
+    monkeypatch.setattr(solar, "fetch_pvcalc", fail)
 
 
 def test_changing_the_bill_recomputes_savings_without_pvgis_or_gemini_and_marks_the_explanation_stale(
@@ -286,15 +341,16 @@ def test_changing_the_bill_recomputes_savings_without_pvgis_or_gemini_and_marks_
     at = _after_hesapla(building_point)
     calls_after_hesapla = client.calls
     assert at.session_state["result"]["tasarruf_yontemi"] == "genis_tahmin"
-    assert any("Faturanızı girin" in c.value for c in at.caption)
-    before = at.session_state["result"]["yillik_tasarruf_tl_aralik"]
-    monkeypatch.setattr(solar, "get_solar_yield", lambda *a, **k: pytest.fail("PVGIS called on a widget change"))
+    assert any("Ortalama daire faturasını girin" in c.value for c in at.caption)
+    before = at.session_state["result"]["daire_basi_tasarruf_tl_aralik"]
+    _no_pvgis(monkeypatch)
     _widget(at.number_input, BILL_LABEL).set_value(1500.0).run()
     assert not at.exception
     r = at.session_state["result"]
-    assert r["tasarruf_yontemi"] == "fatura" and r["yillik_tasarruf_tl_aralik"] != before
-    assert r["yillik_tasarruf_tl_aralik"][1] <= 12 * 1500 + 0.01
-    assert any("Faturanızın yaklaşık" in i.value for i in at.info)
+    assert r["tasarruf_yontemi"] == "fatura" and r["daire_basi_tasarruf_tl_aralik"] != before
+    assert r["daire_basi_tasarruf_tl_aralik"][1] <= 12 * 1500 + 0.01
+    assert any("Daire başına faturanın yaklaşık" in i.value for i in at.info)
+    assert any("her ay için ortalama tüketim" in c.value or "her ayı için ortalama tüketim" in c.value for c in at.caption)
     assert any("Değerler değişti; açıklama güncel değil." in i.value for i in at.info)  # stale, never auto-called
     assert client.calls == calls_after_hesapla
 
@@ -306,38 +362,47 @@ def test_zero_or_negative_bill_counts_as_no_bill(mocked, building_point, bad):
     assert at.session_state["result"]["tasarruf_yontemi"] == "genis_tahmin"
 
 
-def test_changing_floors_updates_the_height_without_pvgis_or_gemini(mocked, monkeypatch, fake_explain, sample_index, building_point):
-    client = fake_explain([])
+def test_flat_count_is_prefilled_editable_and_changes_the_per_flat_numbers(mocked, monkeypatch, sample_index, building_point):
     at = _after_hesapla(building_point)
-    calls_after_hesapla = client.calls
     found = buildings.find_building(sample_index, *building_point)["building"]
-    floors = _widget(at.number_input, FLOORS_LABEL)
-    assert floors.value == app.floors_prefill(found)
-    monkeypatch.setattr(solar, "get_solar_yield", lambda *a, **k: pytest.fail("PVGIS called on a widget change"))
-    typed = (app.floors_prefill(found) or 0) + 2
-    floors.set_value(typed).run()
-    assert not at.exception and client.calls == calls_after_hesapla
-    assert not any("açıklama güncel değil" in i.value for i in at.info)  # floors do not enter the explanation payload
-    assert any("girdiğiniz kat sayısı" in c.value and f"{typed * 3},0 m" in c.value for c in at.caption)
-    rows = at.dataframe[0].value
-    assert "Kullanıcı girdisi" in set(rows[rows["Değer"] == "Bina yüksekliği"]["Durum"])
+    flats = _widget(at.number_input, FLATS_LABEL)
+    n0 = flats.value
+    assert n0 == app.estimate_flats(found, 150.0) >= 1
+    assert any("Tahmini — farklıysa düzeltin" in c.value for c in at.caption)
+    _no_pvgis(monkeypatch)
+    before = at.session_state["result"]["daire_basi_maliyet_tl_aralik"]
+    _widget(at.number_input, FLATS_LABEL).set_value(n0 + 3).run()
+    assert not at.exception
+    r = at.session_state["result"]
+    assert r["daire_sayisi"] == n0 + 3 and r["daire_sayisi_tahmini"] is False
+    assert r["daire_basi_maliyet_tl_aralik"][0] < before[0]
+    assert not any(c.value == "Tahmini — farklıysa düzeltin" for c in at.caption)  # an edited count is no longer an estimate
 
 
-def test_roof_type_change_recomputes_immediately_with_no_pvgis_call(mocked, monkeypatch, building_point):
+def test_roof_structure_and_slider_changes_recompute_with_no_pvgis_call(mocked, monkeypatch, building_point):
     at = _after_hesapla(building_point)
-    monkeypatch.setattr(solar, "get_solar_yield", lambda *a, **k: pytest.fail("PVGIS called on a widget change"))
-    flat = at.session_state["result"]
-    _widget(at.radio, ROOF_LABEL).set_value("Eğimli").run()
+    _no_pvgis(monkeypatch)
+    unknown = at.session_state["result"]
+    assert len(unknown["senaryolar"]) == 2  # Bilmiyorum: both extremes
+    _widget(at.radio, ROOF_LABEL).set_value("Tamamen eğimli").run()
     pitched = at.session_state["result"]
-    # TODO(P2): pitched roofs get their own PVGIS orientation; then this change needs a new solar run
-    assert pitched["cati_tipi"] == "pitched" and pitched["kurulabilir_guc_kwp"] > flat["kurulabilir_guc_kwp"]
+    assert pitched["cati_yapisi"] == "pitched" and pitched["senaryolar"][0]["duz_pay"] == 0.0
+    assert not [s for s in at.slider if s.label == SHARE_LABEL]
+    _widget(at.radio, ROOF_LABEL).set_value("Karma (teras + eğimli)").run()
+    [slider] = [s for s in at.slider if s.label == SHARE_LABEL]
+    assert slider.value == 50 and slider.step == 5 and (slider.min, slider.max) == (0, 100)
+    slider.set_value(80).run()
+    mixed = at.session_state["result"]
+    assert mixed["cati_yapisi"] == "mixed" and mixed["duz_pay_yuzde"] == 80
+    assert not at.exception
 
 
 def test_confidence_card_lists_inputs_and_improvements(mocked, building_point):
     at = _after_hesapla(building_point)
     text = " ".join(m.value for m in at.markdown)
-    assert "Ölçülen:" in text and "Varsayılan:" in text and "Çatı tipi: bilinmiyor" in text
-    assert any("Çatı tipini seçin" in c.value for c in at.caption)
+    assert "Ölçülen:" in text and "Varsayılan:" in text and "Çatı yapısı: bilinmiyor" in text
+    assert "Tahmin edilen:" in text and "Daire sayısı: kat sayısı × taban alanı" in text
+    assert any("Çatı yapısını seçin" in c.value for c in at.caption)
 
 
 # ---------------------------------------------------------- demo photo vs a real building
@@ -350,9 +415,7 @@ def test_photo_applies_rule():
 
 
 def _run_demo_photo(name, point=OUT_OF_COVERAGE):
-    at = _run_with_point(point)
-    _widget(at.radio, "Fotoğraf").set_value(PHOTO_RADIO_DEMO)
-    at.run()
+    at = _run_with_point(point, skip=False)
     at.selectbox[0].select(name)
     at.run()
     return at
@@ -363,12 +426,13 @@ def test_demo_photo_is_shown_but_not_applied_to_a_real_building(
 ):
     client = fake_gemini([roof10_json])
     at = _run_demo_photo("roof_10.jpg", building_point)
-    at.button[0].click().run()
+    _button(at, "Hesapla").click().run()
     assert not at.exception and client.calls == 1
     assert any(app.DEMO_PHOTO_NOTE == i.value for i in at.info)
     call = spy_capacity[-1]
-    assert call["args"][1] is None and call["kwargs"]["image_view"] is None  # no obstacle ratio applied
-    assert call["args"][2] == "flat" and call["kwargs"]["roof_type_known"] is False  # Gemini's pitched not applied
+    assert call["obstacle_ratio"] is None and call["image_view"] is None  # no obstacle ratio applied
+    assert call["structure"] == "unknown"  # Gemini's pitched is not pre-selected
+    assert at.session_state[app.KEY_STRUCTURE] == "Bilmiyorum"
     r = at.session_state["result"]
     assert r["engel_orani"] is None and r["guven_seviyesi"] == "Düşük"  # confidence not raised
     assert at.session_state["analysis"]["detection"] is not None  # the vision result is still displayed
@@ -377,17 +441,16 @@ def test_demo_photo_is_shown_but_not_applied_to_a_real_building(
 
 
 def test_uploaded_style_photo_is_applied_to_the_building(sample_index, building_point):
-    solar_result = _fake_yield(41.0, 29.0)
     building = buildings.find_building(sample_index, *building_point)["building"]
-    inputs = {"lat": 41.0, "lon": 29.0, "area": building["area_m2"], "usable_base_area_m2": building["setback_area_m2"],
-              "roof_type": "flat", "roof_known": True, "photo_applies": app.photo_applies(building, False)}
+    inputs = {**_inputs(), "area": building["area_m2"], "usable_base_area_m2": building["setback_area_m2"],
+              "photo_applies": app.photo_applies(building, False)}
     det = _square_detection()
-    result, ratio = app.recompute(solar_result, inputs, det, {0, 1})
+    result, ratio = app.recompute(_bundle(), inputs, det, {0, 1})
     assert ratio == pytest.approx(0.5) and result["engel_orani"] == pytest.approx(0.5)
     assert result["kullanilabilir_alan_m2"] == pytest.approx(building["setback_area_m2"] * 0.5, abs=0.01)
-    assert result["guven_seviyesi"] == "Orta"  # polygon + top-down photo + known roof type
+    assert result["guven_seviyesi"] == "Orta"  # polygon + top-down photo + known roof structure
     inputs["photo_applies"] = app.photo_applies(building, True)  # same photo, but a bundled demo
-    result, ratio = app.recompute(solar_result, inputs, det, {0, 1})
+    result, ratio = app.recompute(_bundle(), inputs, det, {0, 1})
     assert ratio is None and result["engel_orani"] is None and result["goruntu_turu"] is None
     assert app.explained_detection(det, {0, 1}, inputs) is None
 
@@ -409,12 +472,11 @@ def test_height_text_per_source_and_mae_from_the_report():
     assert "girdiğiniz kat sayısı" in app.height_text({**b, "height_source": "user"}, rep)
 
 
-def test_floors_helpers():
-    assert app.floors_prefill({"num_floors": 4.0}) == 4 and app.floors_prefill({"num_floors": None}) is None
-    assert app.floors_prefill({"num_floors": 400}) == 100 and app.floors_prefill(None) is None
-    b = {"num_floors": 4.0}
-    assert app.effective_floors(4, b) is None  # unchanged from the data: the data height rule stays
-    assert app.effective_floors(6, b) == 6 and app.effective_floors(None, b) is None
+def test_estimate_flats_helper():
+    assert app.estimate_flats(None, 120.0) == 1 and app.estimate_flats(None, 0.0) == 1
+    assert app.estimate_flats({"num_floors": 4.0, "height_m": 99.0, "area_m2": 240.0}, 0) == 8
+    assert app.estimate_flats({"num_floors": None, "height_m": 15.0, "area_m2": 240.0}, 0) == 10
+    assert app.estimate_flats({"num_floors": None, "height_m": 1.0, "area_m2": 20.0}, 0) == 1
 
 
 def test_clean_bill():
@@ -422,28 +484,38 @@ def test_clean_bill():
     assert all(app.clean_bill(v) is None for v in (None, 0, -5, float("nan"), float("inf"), "abc", True))
 
 
-def test_coverage_and_shared_roof_texts():
-    monthly = [50, 60, 90, 110, 140, 160, 170, 160, 120, 90, 55, 45]
-    base = dict(roof_area_m2=300, obstacle_ratio=None, roof_type="flat", yield_ideal=1300, yield_shaded=sum(monthly),
-                monthly_shaded=monthly, usable_base_area_m2=250.0)
-    big = calc.compute_capacity(**base, monthly_bill_tl=300)
-    assert app.coverage_text(big) == "Faturanızın yaklaşık %100 kadarını karşılar."
-    shared = app.shared_roof_text(big)
-    assert shared.startswith("Tek daire faturanızın tamamını karşılar; üretimin yalnızca %")
-    assert "apartman ortak alanı veya diğer daireler için değerlendirilebilir." in shared
-    small = calc.compute_capacity(**{**base, "usable_base_area_m2": 20.0}, monthly_bill_tl=6000)
-    assert app.shared_roof_text(small) is None
-    lo, hi = small["fatura_karsilama_yuzde_aralik"]
-    assert app.coverage_text(small) == f"Faturanızın yaklaşık %{round(lo)}–%{round(hi)} kadarını karşılar."
-    assert app.coverage_text(calc.compute_capacity(**base)) is None  # no bill
+def test_coverage_text_is_per_flat_and_never_single_flat_framing():
+    with_bill = app.build_result(_bundle(), {**_inputs(), "bill": 1500.0, "usable_base_area_m2": 250.0})
+    text = app.coverage_text(with_bill)
+    assert text.startswith("Daire başına faturanın yaklaşık %") and text.endswith("kadarı karşılanır.")
+    lo, hi = (round(v) for v in with_bill["fatura_karsilama_yuzde_aralik"])
+    span = f"%{lo}" if lo == hi else f"%{lo}–%{hi}"
+    assert text == f"Daire başına faturanın yaklaşık {span} kadarı karşılanır."
+    assert app.remaining_bill_text(with_bill).startswith("Kalan ortalama aylık daire faturası")
+    no_bill = app.build_result(_bundle(), _inputs())
+    assert app.coverage_text(no_bill) is None and app.remaining_bill_text(no_bill) is None
+    assert not hasattr(app, "shared_roof_text")
+
+
+def test_no_single_flat_framing_anywhere_in_the_rendered_page(mocked, building_point):
+    at = _after_hesapla(building_point)
+    _widget(at.number_input, BILL_LABEL).set_value(1500.0).run()
+    page = " ".join(
+        [i.value for i in at.info] + [w.value for w in at.warning] + [c.value for c in at.caption]
+        + [m.value for m in at.markdown] + [m.label for m in at.metric]
+    )
+    for phrase in ("Faturanızın", "faturanızın", "Tek daire faturanızın tamamını karşılar", "Tek hanenin", "tek hane"):
+        assert phrase not in page, phrase
+    assert config.TARIFF_SOURCE in page
+    assert building_mode.LEGAL_NOTE in [w.value for w in at.warning]  # always visible
 
 
 def test_tl_card_always_shows_tariff_source_and_method(mocked, building_point):
     at = _after_hesapla(building_point)
     assert any(config.TARIFF_SOURCE in c.value and "vergiler dahil yaklaşık" in c.value for c in at.caption)
-    assert any("Geniş tahmin (tüketim bilinmiyor)" in c.value for c in at.caption)
+    assert any("Geniş tahmin: kademe bilinmiyor" in c.value for c in at.caption)
     _widget(at.number_input, BILL_LABEL).set_value(2000.0).run()
-    assert any("Faturanıza göre hesaplandı" in c.value for c in at.caption)
+    assert any("Ortalama daire faturasına göre hesaplandı" in c.value for c in at.caption)
     assert config.TARIFF_SOURCE in " ".join(c.value for c in at.caption)
 
 
@@ -451,7 +523,6 @@ def test_tl_card_always_shows_tariff_source_and_method(mocked, building_point):
 
 from core import vision  # noqa: E402
 
-PHOTO_RADIO_DEMO = "Örnek fotoğraf seç"
 
 
 def _square_detection(obstacles=((0, 0, 50, 50), (50, 50, 100, 100)), roof_type="flat", image_view="top-down"):
@@ -464,13 +535,14 @@ def _square_detection(obstacles=((0, 0, 50, 50), (50, 50, 100, 100)), roof_type=
     }
 
 
-def _inputs(roof_type="flat"):
-    return {"lat": 41.0, "lon": 29.0, "area": 100.0, "roof_type": roof_type, "roof_known": True, "roof_tag": "Varsayım"}
+def _inputs(structure="flat"):
+    return {"lat": 41.0, "lon": 29.0, "area": 100.0, "structure": structure, "flat_share_pct": 50, "n_flats": 4,
+            "n_flats_estimated": False, "roof_tag": "Varsayım"}
 
 
 def test_deselecting_obstacle_lowers_ratio_without_gemini_or_pvgis(monkeypatch):
     monkeypatch.setattr(vision, "_get_client", lambda: pytest.fail("Gemini called"))
-    solar_result = _fake_yield(41.0, 29.0)
+    solar_result = _bundle()
     det = _square_detection()
     _, both = app.recompute(solar_result, _inputs(), det, {0, 1})
     _, one = app.recompute(solar_result, _inputs(), det, {0})
@@ -478,7 +550,7 @@ def test_deselecting_obstacle_lowers_ratio_without_gemini_or_pvgis(monkeypatch):
 
 
 def test_all_obstacles_deselected_is_zero_ratio_not_no_photo(monkeypatch):
-    solar_result = _fake_yield(41.0, 29.0)
+    solar_result = _bundle()
     r, ratio = app.recompute(solar_result, _inputs(), _square_detection(), set())
     assert ratio == 0.0 and r["engel_orani"] == 0.0
     assert r["kullanilabilir_alan_m2"] == pytest.approx(100.0 * 0.85)  # photo, clean roof: 0.85 (not 0.276)
@@ -493,25 +565,42 @@ def test_selected_ids_from_editor_dataframe():
     assert app.selected_ids(df) == {0, 2}
 
 
+def _state(label, share=50, flats=3, estimate=3, bill=None):
+    return {app.KEY_STRUCTURE: label, app.KEY_SHARE: share, app.KEY_FLATS: flats, app.KEY_FLATS_ESTIMATE: estimate, app.KEY_BILL: bill}
+
+
 @pytest.mark.parametrize(
-    "choice, preselected, expected",
+    "label, preselect, structure, tag",
     [
-        ("Düz", None, ("flat", True, "Kullanıcı girdisi")),
-        ("Eğimli", None, ("pitched", True, "Kullanıcı girdisi")),
-        ("Eğimli", "Eğimli", ("pitched", True, "Ölçüm/veri")),  # unchanged from the photo's answer
-        ("Düz", "Eğimli", ("flat", True, "Kullanıcı girdisi")),  # the user overrode it
-        ("Bilmiyorum", None, ("flat", False, "Varsayım")),
+        ("Tamamen düz", None, "flat", "Kullanıcı girdisi"),
+        ("Tamamen eğimli", ("Tamamen eğimli", 50), "pitched", "Ölçüm/veri"),  # unchanged from the photo's answer
+        ("Tamamen düz", ("Tamamen eğimli", 50), "flat", "Kullanıcı girdisi"),  # the user overrode it
+        ("Karma (teras + eğimli)", None, "mixed", "Kullanıcı girdisi"),
+        ("Bilmiyorum", None, "unknown", "Varsayım"),
     ],
 )
-def test_resolve_roof_type(choice, preselected, expected):
-    assert app.resolve_roof_type(choice, preselected) == expected
+def test_collect_inputs_maps_the_roof_structure_and_its_tag(label, preselect, structure, tag):
+    analysis = {"inputs": {"lat": 1, "lon": 2}, "building": None, "roof_preselect": preselect}
+    got = app.collect_inputs(_state(label), analysis)
+    assert (got["structure"], got["roof_tag"]) == (structure, tag)
+    assert got["n_flats"] == 3 and got["n_flats_estimated"] is True and got["bill"] is None
+
+
+def test_collect_inputs_clamps_flats_cleans_bill_and_marks_edits():
+    analysis = {"inputs": {}, "building": None}
+    got = app.collect_inputs(_state("Bilmiyorum", flats=0, estimate=4, bill=-5), analysis)
+    assert got["n_flats"] == 1 and got["n_flats_estimated"] is False and got["bill"] is None
+    assert app.collect_inputs(_state("Bilmiyorum", bill=900), analysis)["bill"] == 900.0
+    override = app.collect_inputs(_state("Bilmiyorum"), analysis, override=("Karma (teras + eğimli)", 70))
+    assert override["structure"] == "mixed" and override["flat_share_pct"] == 70
 
 
 def test_photo_roof_choice_preselects_gemini_answer():
-    assert app.photo_roof_choice({"roof_type": "pitched"}) == ("Eğimli", None)
-    assert app.photo_roof_choice({"roof_type": "flat"}) == ("Düz", None)
+    assert app.photo_roof_choice({"roof_type": "pitched"}) == (("Tamamen eğimli", 50), None)
+    assert app.photo_roof_choice({"roof_type": "flat"}) == (("Tamamen düz", 50), None)
     choice, note = app.photo_roof_choice({"roof_type": "mixed"})
-    assert choice == "Düz" and "karma" in note
+    assert choice == ("Karma (teras + eğimli)", 50) and "karma" in note and "%50" in note
+    assert "Bilmiyorum" not in {app.photo_roof_choice({"roof_type": t})[0][0] for t in ("flat", "pitched", "mixed")}
 
 
 def test_parse_sources_and_caption():
@@ -523,7 +612,7 @@ def test_parse_sources_and_caption():
 
 
 def test_assumption_rows_tags_and_demo_row():
-    solar_result = _fake_yield(41.0, 29.0)
+    solar_result = _bundle()
     inputs = dict(_inputs(), demo_photo=True)
     det = _square_detection()
     r, _ = app.recompute(solar_result, inputs, det, {0})
@@ -531,7 +620,8 @@ def test_assumption_rows_tags_and_demo_row():
     assert set(df["Durum"]) <= {"Ölçüm/veri", "Kullanıcı girdisi", "Varsayım", "Sonraki aşamada", "YZ tahmini"}
     assert "Sonraki aşamada" in set(df["Durum"])
     assert any("Demo fotoğrafı örnektir; seçilen binanın kendi çatısı değildir." in n for n in df["Kaynak / not"])
-    assert {"Elektrik tarifesi", "Tasarruf aralığı", "Tasarruf kapsamı"} <= set(df["Değer"])
+    assert {"Elektrik tarifesi", "Tasarruf aralığı", "Paylaşım", "Daire sayısı", "Kurulum maliyeti", "Geri ödeme"} <= set(df["Değer"])
+    assert df.set_index("Değer").loc["Daire sayısı", "Durum"] == "Kullanıcı girdisi"
     assert any(config.TARIFF_SOURCE in n for n in df["Kaynak / not"])
     r2, _ = app.recompute(solar_result, _inputs(), None, set())
     assert not any("Demo fotoğrafı" in n for n in app.assumption_rows(r2, _inputs(), None)["Kaynak / not"])
@@ -541,7 +631,7 @@ def test_assumption_rows_for_a_building_include_setback_height_and_ml_note(sampl
     building = buildings.find_building(sample_index, *building_point)["building"]
     inputs = {**_inputs(), "building": building, "usable_base_area_m2": building["setback_area_m2"],
               "area": building["area_m2"], "photo_applies": True}
-    r, _ = app.recompute(_fake_yield(41.0, 29.0), inputs, None, set())
+    r, _ = app.recompute(_bundle(), inputs, None, set())
     df = app.assumption_rows(r, inputs, None, report=sample_index.report)
     by = df.set_index("Değer")
     assert by.loc["Kenar boşluğu", "Durum"] == "Varsayım" and "1,0 m" in by.loc["Kenar boşluğu", "Sonuç"]
@@ -551,49 +641,54 @@ def test_assumption_rows_for_a_building_include_setback_height_and_ml_note(sampl
 
 
 @pytest.fixture
-def spy_vision_capacity(monkeypatch):
-    calls = []
-    real = calc.compute_capacity
-
-    def spy(*args, **kwargs):
-        calls.append({"args": args, "kwargs": kwargs})
-        return real(*args, **kwargs)
-
-    monkeypatch.setattr(calc, "compute_capacity", spy)
-    return calls
+def spy_vision_capacity(spy_capacity):
+    return spy_capacity
 
 
-def test_photo_flow_ratio_reaches_compute_capacity_and_preselects_detected_type(
+def test_photo_flow_ratio_reaches_the_analysis_and_preselects_detected_structure(
     mocked, fake_gemini, roof10_json, spy_vision_capacity
 ):
     client = fake_gemini([roof10_json])
     at = _run_demo_photo("roof_10.jpg")  # no building: the demo photo applies as before
-    at.button[0].click().run()
+    _button(at, "Hesapla").click().run()
     assert not at.exception
     assert client.calls == 1
     call = spy_vision_capacity[-1]
-    ratio, roof_type = call["args"][1], call["args"][2]
-    assert 0 < ratio < 0.95 and roof_type == "pitched"  # roof_10 fixture: pitched, oblique
-    assert call["kwargs"]["image_view"] == "oblique"
-    assert _widget(at.radio, ROOF_LABEL).value == "Eğimli"
-    assert any("Fotoğraf analizine göre seçildi" in c.value for c in at.caption)
+    assert 0 < call["obstacle_ratio"] < 0.95 and call["structure"] == "pitched"  # roof_10 fixture: pitched, oblique
+    assert call["image_view"] == "oblique"
+    assert _widget(at.radio, ROOF_LABEL).value == "Tamamen eğimli"  # pre-selected via the pending mechanism
+    assert any("Çatı yapısı fotoğraf analizine göre seçildi" in c.value for c in at.caption)
     labels = [m.label for m in at.metric]
-    assert "Engel oranı" in labels and len(labels) == 10
+    assert "Engel oranı" in labels and len(labels) == 14
     assert any("Açılı fotoğraf" in i.value for i in at.info)
     assert at.dataframe  # assumptions table
     assert at.session_state["result"]["guven_seviyesi"] == "Düşük"
-    # a plain rerun must not call Gemini again
+    row = at.dataframe[-1].value
+    assert "Ölçüm/veri" in set(row[row["Değer"] == "Çatı yapısı"]["Durum"])
+    # a plain rerun must not call Gemini again, and the explanation made after the pre-selection is not stale
     at.run()
     assert client.calls == 1
+    assert not any("açıklama güncel değil" in i.value for i in at.info)
+
+
+def test_mixed_photo_preselects_karma_at_fifty_percent(mocked, fake_gemini, roof10_json):
+    fake_gemini([{**roof10_json, "roof_type": "mixed"}])
+    at = _run_demo_photo("roof_10.jpg")
+    _button(at, "Hesapla").click().run()
+    assert not at.exception
+    assert _widget(at.radio, ROOF_LABEL).value == "Karma (teras + eğimli)"
+    [slider] = [x for x in at.slider if x.label == SHARE_LABEL]
+    assert slider.value == 50
+    assert any("karma" in i.value for i in at.info)
 
 
 def test_switching_photos_gives_fresh_editor_keys(mocked, fake_gemini, roof10_json):
     fake_gemini([roof10_json, roof10_json])
     at = _run_demo_photo("roof_10.jpg")
-    at.button[0].click().run()
+    _button(at, "Hesapla").click().run()
     key_a = next(k for k in at.session_state if k.startswith("obstacles_"))
     at.selectbox[0].select("roof_11.jpg").run()
-    at.button[0].click().run()
+    _button(at, "Hesapla").click().run()
     keys = [k for k in at.session_state if k.startswith("obstacles_")]
     key_b = [k for k in keys if k != key_a]
     assert key_b, "a different photo must use a different data_editor key"
@@ -601,23 +696,23 @@ def test_switching_photos_gives_fresh_editor_keys(mocked, fake_gemini, roof10_js
 
 def test_no_photo_path_still_works_and_lists_assumption(mocked, spy_capacity):
     at = _run_with_point()
-    at.button[0].click().run()
+    _button(at, "Hesapla").click().run()
     assert not at.exception
     call = spy_capacity[-1]
-    assert call["args"][1] is None and call["args"][2] == "flat"
-    assert len(at.metric) == 9
+    assert call["obstacle_ratio"] is None and call["structure"] == "unknown"
+    assert len(at.metric) == 13
     assert at.session_state["result"]["guven_seviyesi"] == "Düşük"
 
 
 def test_vision_error_falls_back_to_no_photo_calculation(mocked, fake_gemini, spy_capacity):
     fake_gemini(["{bad", "{bad"])
     at = _run_demo_photo("roof_10.jpg")
-    at.button[0].click().run()
+    _button(at, "Hesapla").click().run()
     assert not at.exception
     assert any("okunamadı" in w.value for w in at.warning)
-    assert spy_capacity[-1]["args"][1] is None
+    assert spy_capacity[-1]["obstacle_ratio"] is None
     assert at.session_state["result"]["guven_seviyesi"] == "Düşük"
-    assert len(at.metric) == 9
+    assert len(at.metric) == 13
 
 
 # ------------------------------------------------------------- explanation (Demo-3)
@@ -627,12 +722,13 @@ EXPLAIN_BUTTON = "Açıklamayı YZ ile güncelle"
 
 def _flow_text():
     """A valid Gemini-like text for the no-photo flow (template text passes the validator by construction)."""
-    return explain.build_fallback_explanation(app.calculate(41.015, 28.979, 150.0, "flat"))
+    flow = app.calculate(41.015, 28.979, 150.0, "unknown", n_flats=1, n_flats_estimated=True)
+    return explain.build_fallback_explanation(flow)
 
 
 def _run_no_photo():
     at = _run_with_point()
-    at.button[0].click().run()
+    _button(at, "Hesapla").click().run()
     return at
 
 
@@ -657,9 +753,11 @@ def test_template_source_when_gemini_fails(mocked):
     assert at.session_state["explanation"]["source"] == "template"
 
 
-def test_no_photo_flow_has_nine_cards_and_explanation(mocked):
+def test_no_photo_flow_has_thirteen_cards_and_explanation(mocked):
     at = _run_no_photo()
-    assert len(at.metric) == 9 and "explanation" in at.session_state
+    assert len(at.metric) == 13 and "explanation" in at.session_state
+    _widget(at.number_input, BILL_LABEL).set_value(1500.0).run()
+    assert len(at.metric) == 14 and "Faturanın karşılanan kısmı" in [m.label for m in at.metric]
 
 
 def test_missing_key_skips_vision_and_uses_template(mocked, fake_gemini, monkeypatch):
@@ -669,11 +767,11 @@ def test_missing_key_skips_vision_and_uses_template(mocked, fake_gemini, monkeyp
     monkeypatch.setattr(config, "get_gemini_api_key", no_key)
     client = fake_gemini([])
     at = _run_demo_photo("roof_10.jpg")
-    at.button[0].click().run()
+    _button(at, "Hesapla").click().run()
     assert not at.exception and client.calls == 0
     assert any("anahtarı bulunamadı" in w.value for w in at.warning)
     assert at.session_state["explanation"]["source"] == "template"
-    assert len(at.metric) == 9
+    assert len(at.metric) == 13
 
 
 def test_api_key_is_resolved_in_main_thread_and_passed_to_worker(mocked, monkeypatch, roof10_json):
@@ -685,7 +783,7 @@ def test_api_key_is_resolved_in_main_thread_and_passed_to_worker(mocked, monkeyp
 
     monkeypatch.setattr(vision, "detect_roof_objects", spy)
     at = _run_demo_photo("roof_10.jpg")
-    at.button[0].click().run()
+    _button(at, "Hesapla").click().run()
     assert not at.exception and seen == ["test-key"]
     assert any("Test hatası." in w.value for w in at.warning)
 
@@ -693,7 +791,7 @@ def test_api_key_is_resolved_in_main_thread_and_passed_to_worker(mocked, monkeyp
 def test_obstacle_edit_makes_explanation_stale_without_gemini_then_regenerate_clears_it(
     mocked, fake_explain, monkeypatch
 ):
-    solar_result = _fake_yield(41.0, 29.0)
+    solar_result = _bundle()
     det = _square_detection()
     inputs = dict(_inputs(), demo_photo=False)
     monkeypatch.setattr(app, "get_gemini_api_key", lambda: "test-key")
@@ -714,7 +812,7 @@ def test_obstacle_edit_makes_explanation_stale_without_gemini_then_regenerate_cl
 
 
 def test_a_new_bill_makes_the_stored_explanation_stale():
-    solar_result = _fake_yield(41.0, 29.0)
+    solar_result = _bundle()
     r0, _ = app.recompute(solar_result, _inputs(), None, set())
     r1, _ = app.recompute(solar_result, {**_inputs(), "bill": 1500.0}, None, set())
     exp = {"key": explain.payload_key(explain.build_payload(r0, None, False))}
@@ -745,12 +843,12 @@ def test_savings_short_format_and_tooltip(mocked):
     assert app.format_savings_short(27515, 55031) == "27,5 – 55,0 bin TL"
     assert app.format_savings_short(500, 900) == "500 – 900 TL"
     at = _run_no_photo()
-    card = next(m for m in at.metric if m.label == "Yıllık tasarruf (aralık)")
+    card = next(m for m in at.metric if m.label == "Daire başına sabit indirim (yıllık)")
     assert card.value.endswith("bin TL") and "Kesin aralık:" in card.help and card.help.endswith("TL")
 
 
 def test_assumption_row_shows_active_explanation_source():
-    solar_result = _fake_yield(41.0, 29.0)
+    solar_result = _bundle()
     r, _ = app.recompute(solar_result, _inputs(), None, set())
     row = lambda src: app.assumption_rows(r, _inputs(), None, {"source": src})
     gem = row("gemini")
@@ -762,13 +860,195 @@ def test_assumption_row_shows_active_explanation_source():
 def test_cards_and_explanation_payload_round_identically():
     from core.formatting import percent_from_ratio, tr_num
 
-    solar_result = _fake_yield(41.0, 29.0)
-    r, _ = app.recompute(solar_result, _inputs(), _square_detection(), {0, 1})
+    r = app.build_result(_bundle(), {**_inputs("unknown"), "bill": 1500.0}, obstacle_ratio=0.2715, image_view="top-down")
     r["yillik_isinim_kwh_m2"] = 1738.5  # a half: f-format would truncate it to 1.738
     payload = explain.build_payload(r, _square_detection(), False)
-    for key, decimals in (("yillik_isinim_kwh_m2", 0), ("golgeli_uretim_kwh_kwp", 0), ("yillik_uretim_kwh", 0),
-                          ("sicaklik_kaybi_yuzde", 1), ("kurulabilir_guc_kwp", 1), ("kullanilabilir_alan_m2", 1),
-                          ("co2_ton_yil", 1), ("uygunluk_puani_yuzde", 1)):
+    for key, decimals in (("yillik_isinim_kwh_m2", 0), ("golgeli_uretim_kwh_kwp", 0), ("sicaklik_kaybi_yuzde", 1),
+                          ("kullanilabilir_alan_m2", 1), ("uygunluk_puani_yuzde", 1)):
         assert tr_num(r[key], decimals) == tr_num(payload[key], decimals), key
+    ranges = (
+        ("kurulabilir_guc_kwp_aralik", "kurulabilir_guc_kwp", 1), ("yillik_uretim_kwh_aralik", "yillik_uretim_kwh", 0),
+        ("co2_ton_yil_aralik", "co2_ton_yil", 1), ("toplam_maliyet_tl_aralik", "kurulum_maliyeti_tl", 0),
+        ("daire_basi_maliyet_tl_aralik", "daire_basi_maliyet_tl", 0), ("daire_basi_tasarruf_tl_aralik", "daire_basi_tasarruf_tl_yil", 0),
+        ("fatura_karsilama_yuzde_aralik", "fatura_karsilama_yuzde_aralik", 0), ("kalan_fatura_tl_ay_aralik", "kalan_fatura_tl_ay", 0),
+    )
+    for result_key, payload_key, decimals in ranges:
+        shown = app.format_range(r[result_key], decimals).replace(" ", "")
+        assert shown == explain._fmt(payload[payload_key], decimals), result_key
     assert tr_num(r["yillik_isinim_kwh_m2"]) == "1.739"
     assert tr_num(percent_from_ratio(r["engel_orani"]), 1) == tr_num(payload["engel_orani"] * 100, 1)
+
+
+# --------------------------------------------------- building mode: inputs across clicks, reset, faces
+
+def test_sync_building_inputs_resets_per_building_values_but_never_the_bill():
+    state = {app.KEY_BILL: 1500.0}
+    b1 = {"id": "b1", "num_floors": 4.0, "height_m": 12.0, "area_m2": 240.0}
+    b2 = {"id": "b2", "num_floors": 2.0, "height_m": 6.0, "area_m2": 120.0}
+    assert app.sync_building_inputs(state, b1, 150.0) is True
+    assert state[app.KEY_FLATS] == state[app.KEY_FLATS_ESTIMATE] == 8
+    assert state[app.KEY_STRUCTURE] == "Bilmiyorum" and state[app.KEY_SHARE] == config.FLAT_SHARE_DEFAULT_PCT
+    state[app.KEY_FLATS], state[app.KEY_STRUCTURE], state[app.KEY_SHARE] = 12, "Karma (teras + eğimli)", 80
+    assert app.sync_building_inputs(state, b1, 150.0) is False  # same building: user edits stay
+    assert (state[app.KEY_FLATS], state[app.KEY_SHARE]) == (12, 80)
+    assert app.sync_building_inputs(state, b2, 150.0) is True  # a different building id resets
+    assert state[app.KEY_FLATS] == 2 and state[app.KEY_STRUCTURE] == "Bilmiyorum"
+    assert state[app.KEY_SHARE] == config.FLAT_SHARE_DEFAULT_PCT
+    assert state[app.KEY_BILL] == 1500.0  # only the bill survives
+    app.sync_building_inputs(state, None, 120.0)  # the manual-area flow is its own "building"
+    assert state[app.KEY_BUILDING] == "manual" and state[app.KEY_FLATS] == 1
+
+
+def test_reset_clears_the_bill_and_forces_the_per_building_reset():
+    state = {app.KEY_BILL: 900.0}
+    b = {"id": "b1", "num_floors": 3.0, "height_m": 9.0, "area_m2": 240.0}
+    app.sync_building_inputs(state, b, 100.0)
+    state[app.KEY_FLATS], state[app.KEY_STRUCTURE] = 9, "Tamamen düz"
+    app.reset_inputs(state)
+    assert state[app.KEY_BILL] is None
+    assert app.sync_building_inputs(state, b, 100.0) is True
+    assert state[app.KEY_FLATS] == 6 and state[app.KEY_STRUCTURE] == "Bilmiyorum"
+
+
+def test_pending_photo_preselection_is_applied_once():
+    state = {app.KEY_PENDING_ROOF: ("Tamamen eğimli", 50)}
+    app.apply_pending_roof(state)
+    assert state[app.KEY_STRUCTURE] == "Tamamen eğimli" and app.KEY_PENDING_ROOF not in state
+    state[app.KEY_STRUCTURE] = "Tamamen düz"
+    app.apply_pending_roof(state)  # nothing pending: the user choice is untouched
+    assert state[app.KEY_STRUCTURE] == "Tamamen düz"
+
+
+def _second_building_point(sample_index):
+    assert len(sample_index.polygons_m) >= 2
+    p = sample_index.polygons_m[1].representative_point()
+    lon, lat = TO_WGS.transform(p.x, p.y)
+    return lat, lon
+
+
+def test_bill_persists_across_clicks_and_per_building_inputs_reset(mocked, map_calls, sample_index, building_point):
+    calls, box = map_calls
+    at = _run_with_point(building_point)
+    _widget(at.number_input, BILL_LABEL).set_value(1500.0).run()
+    _widget(at.radio, ROOF_LABEL).set_value("Tamamen düz").run()
+    n0 = _widget(at.number_input, FLATS_LABEL).value
+    _widget(at.number_input, FLATS_LABEL).set_value(n0 + 5).run()
+    _button(at, "Hesapla").click().run()
+    assert at.session_state["result"]["fatura_tl_ay"] == 1500.0
+
+    second = _second_building_point(sample_index)
+    box["value"] = {"last_clicked": {"lat": second[0], "lng": second[1]}}
+    at.run()
+    assert not at.exception and "analysis" not in at.session_state  # results are cleared by a new click
+    assert not [n for n in at.number_input if n.label == BILL_LABEL]  # the photo step starts again for the new building
+    assert at.session_state[app.KEY_BILL_KEEP] == 1500.0
+    _button(at, "Fotoğrafsız devam et").click().run()
+    assert _widget(at.number_input, BILL_LABEL).value == 1500.0  # the bill survives
+    assert at.session_state[app.KEY_BILL] == 1500.0
+    assert _widget(at.radio, ROOF_LABEL).value == "Bilmiyorum"  # roof structure reset
+    found = buildings.find_building(sample_index, *second)["building"]
+    assert _widget(at.number_input, FLATS_LABEL).value == app.estimate_flats(found, 150.0)  # re-estimated
+
+    _button(at, "Hesapla").click().run()  # the new building is calculated with the persisted bill
+    assert at.session_state["result"]["fatura_tl_ay"] == 1500.0 and at.session_state["result"]["daire_sayisi_tahmini"]
+
+
+def test_clicking_the_same_building_again_keeps_the_edited_inputs(mocked, map_calls, building_point, sample_index):
+    calls, box = map_calls
+    at = _run_with_point(building_point)
+    _widget(at.radio, ROOF_LABEL).set_value("Tamamen eğimli").run()
+    lon, lat = TO_WGS.transform(*sample_index.polygons_m[0].centroid.coords[0])
+    box["value"] = {"last_clicked": {"lat": lat, "lng": lon}}
+    at.run()
+    assert at.session_state[app.KEY_STRUCTURE] == "Tamamen eğimli"  # same building id: no reset
+
+
+def test_sifirla_button_clears_the_inputs_including_the_bill(mocked, building_point):
+    at = _run_with_point(building_point)
+    _widget(at.number_input, BILL_LABEL).set_value(1500.0).run()
+    _widget(at.radio, ROOF_LABEL).set_value("Tamamen düz").run()
+    n0 = _widget(at.number_input, FLATS_LABEL).value
+    _widget(at.number_input, FLATS_LABEL).set_value(n0 + 4).run()
+    [reset] = [b for b in at.button if b.label == "Sıfırla"]
+    reset.click().run()
+    assert not at.exception
+    assert at.session_state[app.KEY_BILL_KEEP] is None
+    _button(at, "Fotoğrafsız devam et").click().run()  # a reset also restarts the photo step
+    assert _widget(at.number_input, BILL_LABEL).value is None
+    assert _widget(at.radio, ROOF_LABEL).value == "Bilmiyorum"
+    assert _widget(at.number_input, FLATS_LABEL).value == n0
+    assert at.session_state[app.KEY_BILL] is None
+
+
+def test_sidebar_inputs_are_rendered_before_any_calculation(mocked, building_point):
+    at = _run_with_point(building_point)
+    labels = [n.label for n in at.number_input]
+    assert FLATS_LABEL in labels and BILL_LABEL in labels and ROOF_LABEL in [r.label for r in at.radio]
+    assert not [s for s in at.slider if s.label == SHARE_LABEL]  # only Karma shows the slider
+    assert any(c.value == "Tahmini — farklıysa düzeltin" for c in at.caption)
+
+
+def test_a_failed_pitched_face_still_produces_a_result_with_a_warning(mocked, monkeypatch, building_point):
+    def flaky(lat, lon, aspect, angle=30, horizon72=None):
+        if abs(aspect) > 135:  # the north-ish face fails, the south-ish one works
+            raise solar.SolarDataError("PVGIS yok")
+        return _fake_face(lat, lon, aspect, angle)
+
+    monkeypatch.setattr(app, "get_face_yield", flaky)
+    monkeypatch.setattr(solar, "get_face_yield", flaky)
+    at = _run_with_point(building_point)
+    _button(at, "Hesapla").click().run()
+    assert not at.exception and not at.error
+    _widget(at.radio, ROOF_LABEL).set_value("Tamamen eğimli").run()
+    assert any("Bir çatı yüzü için güneş verisi alınamadı; sonuç eksik olabilir" in w.value for w in at.warning)
+    r = at.session_state["result"]
+    assert r["senaryolar"][0]["alinamayan_yuz"] == 1 and r["senaryolar"][0]["kwp"] > 0
+    assert r["guven_seviyesi"] == "Düşük"  # the unavailable face drops one level
+
+
+def test_a_failed_flat_call_keeps_the_existing_error_behaviour(mocked, monkeypatch, building_point):
+    def boom(lat, lon, horizon72=None):
+        raise solar.SolarDataError("PVGIS sunucusuna ulaşılamadı.")
+
+    monkeypatch.setattr(app, "get_solar_yield", boom)
+    monkeypatch.setattr(solar, "get_solar_yield", boom)
+    at = _run_with_point(building_point)
+    _button(at, "Hesapla").click().run()
+    assert any("PVGIS sunucusuna ulaşılamadı" in e.value for e in at.error)
+    assert "analysis" not in at.session_state
+
+
+def test_hesapla_makes_two_face_calls_with_the_ridge_aspects_and_structure_changes_make_none(
+    mocked, monkeypatch, sample_index, building_point
+):
+    seen = []
+
+    def spy(lat, lon, aspect, angle=30, horizon72=None):
+        seen.append(aspect)
+        return _fake_face(lat, lon, aspect, angle)
+
+    monkeypatch.setattr(app, "get_face_yield", spy)
+    monkeypatch.setattr(solar, "get_face_yield", spy)
+    at = _run_with_point(building_point)
+    _button(at, "Hesapla").click().run()
+    found = buildings.find_building(sample_index, *building_point)["building"]
+    expected = sorted(s["aspect"] for s in building_mode.face_specs(found["ridge_azimuth_deg"]))
+    assert sorted(seen) == expected
+    n = len(seen)
+    _widget(at.radio, ROOF_LABEL).set_value("Tamamen eğimli").run()
+    assert len(seen) == n  # a roof-structure change never calls PVGIS again
+
+
+def test_discount_notes_are_shown_under_the_savings_card(mocked, building_point):
+    at = _after_hesapla(building_point)
+    captions = [c.value for c in at.caption]
+    assert building_mode.SEASONAL_NOTE in captions and building_mode.PHYSICAL_SHARING_NOTE in captions
+    assert any(c.startswith("Aylık ortalama:") and "TL/ay" in c for c in captions)
+    assert "Daire başına sabit indirim (yıllık)" in [m.label for m in at.metric]
+
+
+def test_netting_note_is_shown_with_a_bill_and_not_without(mocked, building_point):
+    at = _after_hesapla(building_point)
+    assert building_mode.NETTING_NOTE not in [c.value for c in at.caption]
+    _widget(at.number_input, BILL_LABEL).set_value(1500.0).run()
+    assert building_mode.NETTING_NOTE in [c.value for c in at.caption]

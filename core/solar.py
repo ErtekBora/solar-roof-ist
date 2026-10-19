@@ -11,7 +11,7 @@ import time
 
 import requests
 
-from core.config import PVGIS_LOSS
+from core.config import DEFAULT_ROOF_PITCH_DEG, PVGIS_LOSS
 
 PVCALC_URL = "https://re.jrc.ec.europa.eu/api/v5_3/PVcalc"
 USER_AGENT = "istanbul-rooftop-solar/0.1 (GreenTech COP31 student project)"
@@ -145,6 +145,20 @@ def get_solar_yield(lat, lon, horizon72=None):
             lat, lon, angle=ideal["angle"], aspect=ideal["aspect"], usehorizon=True, userhorizon=horizon72
         )
         _cache[key] = {"ideal": ideal, "shaded": shaded, "angle": ideal["angle"], "aspect": ideal["aspect"]}
+    return copy.deepcopy(_cache[key])
+
+
+def get_face_yield(lat, lon, aspect, angle=DEFAULT_ROOF_PITCH_DEG, horizon72=None):
+    """One cached PVcalc run for a pitched roof face: fixed `angle` and `aspect`, optimalangles=0, usehorizon=1.
+
+    aspect uses the PVGIS convention (0 = South, 90 = West, -90 = East). Raises SolarDataError after the retries.
+    """
+    if horizon72 is not None:
+        horizon72 = tuple(horizon72)
+        _validate_userhorizon(horizon72)
+    key = ("face", round(lat, 4), round(lon, 4), angle, aspect, horizon72)
+    if key not in _cache:
+        _cache[key] = fetch_pvcalc(lat, lon, angle=angle, aspect=aspect, usehorizon=True, userhorizon=horizon72)
     return copy.deepcopy(_cache[key])
 
 

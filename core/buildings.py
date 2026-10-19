@@ -256,6 +256,20 @@ def find_building(index, lat, lon, floors=None):
     return _result("ok", None, building, _neighbours(index, match))
 
 
+def ridge_azimuth_deg(poly_m):
+    """Ridge bearing (0..180, North-based, clockwise) along the long side of the minimum rotated rectangle.
+
+    `poly_m` is in a metric CRS (EPSG:32635, x = east, y = north).
+    """
+    import math
+
+    ring = list(poly_m.minimum_rotated_rectangle.exterior.coords)
+    (x0, y0), (x1, y1), (x2, y2) = ring[0], ring[1], ring[2]
+    first, second = math.hypot(x1 - x0, y1 - y0), math.hypot(x2 - x1, y2 - y1)
+    dx, dy = (x1 - x0, y1 - y0) if first >= second else (x2 - x1, y2 - y1)
+    return math.degrees(math.atan2(dx, dy)) % 180
+
+
 def _building_dict(index, i, distance_m):
     rec, poly = index.records[i], index.polygons_m[i]
     height, source = _auto_height(index, i)
@@ -276,6 +290,7 @@ def _building_dict(index, i, distance_m):
         "data_source": rec["data_source"],
         "match_distance_m": distance_m,
         "centroid": (centroid[1], centroid[0]),  # (lat, lon)
+        "ridge_azimuth_deg": ridge_azimuth_deg(poly),
     }
 
 

@@ -229,3 +229,33 @@ def test_failed_run_is_not_cached(http):
 def test_terrain_horizon_is_stub():
     with pytest.raises(NotImplementedError):
         solar.get_terrain_horizon(LAT, LON)
+
+
+# ------------------------------------------------------------ pitched face (building mode)
+
+def test_face_yield_sends_fixed_angle_and_aspect_with_the_horizon(http):
+    http.queue.append(FakeResponse(200, TERRAIN))
+    r = solar.get_face_yield(LAT, LON, -90)
+    params = http.calls[0]["params"]
+    assert len(http.calls) == 1
+    assert params["optimalangles"] == 0 and params["angle"] == 30 and params["aspect"] == -90
+    assert params["usehorizon"] == 1 and params["peakpower"] == 1 and "userhorizon" not in params
+    assert r["e_y"] == pytest.approx(solar._parse_pvcalc(TERRAIN)["e_y"])
+
+
+def test_face_yield_is_cached_per_aspect(http):
+    http.queue.extend([FakeResponse(200, TERRAIN), FakeResponse(200, TERRAIN)])
+    a = solar.get_face_yield(LAT, LON, -90)
+    solar.get_face_yield(LAT, LON, -90)
+    assert len(http.calls) == 1
+    solar.get_face_yield(LAT, LON, 90)
+    assert len(http.calls) == 2
+    a["e_y"] = 0  # callers get copies; the cache is not mutated
+    assert solar.get_face_yield(LAT, LON, -90)["e_y"] != 0
+
+
+def test_face_yield_retries_429_then_fails_with_a_turkish_error(http, sleeps):
+    http.queue.extend([FakeResponse(429)] * 4)
+    with pytest.raises(SolarDataError):
+        solar.get_face_yield(LAT, LON, 0)
+    assert sleeps == [1, 2, 4] and len(http.calls) == 4
