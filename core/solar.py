@@ -8,6 +8,7 @@ Thread safety: the cache is guarded per key (check-then-fetch never fires the sa
 rate limiter has its own lock. Parallel work: https://docs.python.org/3.11/library/concurrent.futures.html
 """
 import copy
+import logging
 import math
 import threading
 import time
@@ -24,6 +25,8 @@ TIMEOUT_S = 30
 RETRY_STATUSES = (429, 500, 502, 503, 504, 529)
 BACKOFF_S = (1, 2, 4)
 MAX_REQUESTS_PER_S = 30
+
+log = logging.getLogger(__name__)
 
 _cache = {}
 _cache_lock = threading.Lock()  # guards _cache and _key_locks
@@ -228,7 +231,11 @@ def fetch_roof_yields(lat, lon, face_aspects, max_workers=PVGIS_MAX_WORKERS):
         for a, future in face_futures.items():
             try:
                 face_yields[a] = future.result()
-            except SolarDataError:
+            except SolarDataError as exc:
+                log.warning(
+                    "PVGIS face request failed: %s: %s (key lat=%.4f lon=%.4f angle=%s aspect=%s)",
+                    type(exc).__name__, exc, lat, lon, DEFAULT_ROOF_PITCH_DEG, a,
+                )
                 face_yields[a] = None
         solar = flat_future.result()
     return {"solar": solar, "face_yields": face_yields}

@@ -1,4 +1,5 @@
 """Streamlit UI (Turkish): Istanbul rooftop solar suitability tool."""
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -50,6 +51,7 @@ from core.vision import (
     draw_overlay,
 )
 
+log = logging.getLogger(__name__)
 MONTHS_TR = ["Oca", "Şub", "Mar", "Nis", "May", "Haz", "Tem", "Ağu", "Eyl", "Eki", "Kas", "Ara"]
 ROOF_CHOICES = list(building_mode.STRUCTURE_LABELS_TR.values())
 STRUCTURE_FROM_CHOICE = {label: key for key, label in building_mode.STRUCTURE_LABELS_TR.items()}
@@ -73,6 +75,23 @@ NOTE_PHOTO = "Fotoğraftaki engel payı düşüldü — engelleri çizerek netle
 NOTE_FLAT_ASSUMED = "düz çatı varsayımıyla"
 NOTE_FLAT_ASSUMED_GEOMETRY = "düz çatı varsayımıyla; çatı yapısını seçerseniz sonuç tek değere iner"
 DROPPED_FACE_TOOLTIP = "Verimsiz yüz — panel konmadı"
+NUMERIC_LABEL_SOURCE = {
+    "ortalama": "ortalama orana göre",
+    "fotograf": "fotoğraftaki engel oranına göre",
+    "engel_yok": "engel yok beyanına göre",
+}
+TRASH_NOTE = (
+    "Haritadaki çöp kutusu yalnızca son yeniden çizimden sonraki şekilleri siler; eskiler için 'Son çizimi geri al' "
+    "veya 'Engelleri temizle'."
+)
+ZERO_PITCHED_WARNING = "Eğimli yüzler için sonuç üretilemedi; Hesapla'yı tekrar deneyin veya çatı yapısını değiştirin."
+ZERO_GENERIC_WARNING = "Kurulabilir panel alanı bulunamadı; çatı yapısını veya çatı alanını kontrol edin."
+FACE_STATUS_TR = {
+    "kullanildi": "kullanıldı",
+    "elendi": "elendi (düz bölüm veriminin %80'inin altında)",
+    "alinamadi": "güneş verisi alınamadı",
+    "kullanilmadi": "alan yok",
+}
 HELP_STEPS = (
     "1. Haritada bir apartmana tıklayın.\n"
     "2. Daire sayısını kontrol edin.\n"
@@ -275,6 +294,9 @@ def face_bundle(analysis, inputs, terrace=None):
             for f, w in zip(model["faces"], weights)
         ]
     yields = analysis.get("face_yields") or {}
+    for s in specs:
+        if s["aspect"] not in yields:
+            log.warning("No PVGIS request was made for face %s (aspect %r); fetched aspects: %s", s["name"], s["aspect"], sorted(yields))
     return {"solar": analysis["solar"], "faces": [{**s, "solar": yields.get(s["aspect"])} for s in specs]}, model
 
 
@@ -626,8 +648,14 @@ def height_text(building, report):
     return f"Bina yüksekliği: {h} m (varsayım: veri setindeki bilinen yüksekliklerin ortancası)."
 
 
-def input_classes(inputs, has_photo_applied, building):
-    """Which inputs were measured, estimated and assumed (Turkish bullet texts)."""
+def input_classes(inputs, has_photo_applied, building, result=None):
+    """Which inputs were measured, estimated and assumed (Turkish bullet texts).
+
+    A user drawing or the "Engel yok, çatı boş" statement (result "guc_kaynagi" geometri / engel_yok) replaces the
+    photo/average obstacle line.
+    """
+    result = result or {}
+    marked = result.get("guc_kaynagi") in ("geometri", "engel_yok")
     measured, estimated, assumed = ["Güneş verisi (ışınım, verim): PVGIS"], [], []
     if building is not None:
         measured.append("Çatı alanı: bina izi")
@@ -641,7 +669,11 @@ def input_classes(inputs, has_photo_applied, building):
             measured.append("Bina yüksekliği: veri")
     else:
         assumed.append("Çatı alanı: elle girilen değer")
-    if has_photo_applied:
+    if marked and result.get("cizilen_engel_sayisi"):
+        measured.append("Engeller: kullanıcı çizimi")
+    elif marked:
+        measured.append("Engel yok (kullanıcı beyanı)")
+    elif has_photo_applied:
         measured.append("Engel oranı: fotoğraf analizi")
     else:
         assumed.append("Engeller: fotoğraf yok, ortalama kullanılabilir alan oranı")
@@ -779,6 +811,9 @@ def assumption_rows(r, inputs, detection, explanation=None, report=None):
 
 def monthly_chart(result):
     rows = building_mode.chart_rows(result, MONTHS_TR)
+    if not rows:
+        st.info("Üretim yapan çatı bölümü yok; aylık üretim grafiği gösterilmiyor.")
+        return
     groups = {row["Grup"] for row in rows}
     enc = dict(
         x=alt.X("Ay:N", sort=MONTHS_TR, title=None),
@@ -828,7 +863,39 @@ def remaining_bill_text(r):
     return f"Kalan ortalama aylık daire faturası: yaklaşık {format_range(r['kalan_fatura_tl_ay_aralik'], 0, 'TL')}."
 
 
-def show_cards(r, inputs=None, applied=False, building=None):
+def has_capacity(r):
+    """False when no scenario has any installable kWp (e.g. every pitched face dropped or without PVGIS data)."""
+    return r["kurulabilir_guc_kwp_aralik"][1] > 0
+
+
+def zero_capacity_warning(r):
+    pitched = any(seg["tur"] == "face" and seg["plan_m2"] > 0 for sc in r["senaryolar"] for seg in sc["segmentler"])
+    return ZERO_PITCHED_WARNING if pitched else ZERO_GENERIC_WARNING
+
+
+def face_status_lines(r):
+    """One line per roof segment and scenario with its status; nothing disappears silently."""
+    multi = len(r["senaryolar"]) > 1
+    lines = []
+    for sc in r["senaryolar"]:
+        for seg in sc["segmentler"]:
+            if seg["tur"] == "flat" and seg["durum"] == "kullanilmadi":
+                continue  # no terrace share in this scenario: not a face
+            prefix = f"{sc['etiket']} · " if multi else ""
+            detail = f" ({tr_num(seg['kwp'], 1)} kWp)" if seg["durum"] == "kullanildi" else ""
+            if seg["durum"] == "elendi" and seg.get("verim_orani") is not None:
+                detail = f" (verim oranı %{tr_num(seg['verim_orani'] * 100)})"
+            lines.append(f"- {prefix}{seg['ad']}: {FACE_STATUS_TR[seg['durum']]}{detail}")
+    return lines
+
+
+def show_face_status(r):
+    st.markdown("**Çatı yüzleri**")
+    st.markdown("\n".join(face_status_lines(r)))
+
+
+def _capacity_cards(r):
+    """Building and per-flat cards (kWp, kWh, CO2, cost, discount, payback, coverage)."""
     st.markdown("**Bina geneli**")
     b1, b2, b3, b4 = st.columns(4)
     b1.metric("Kurulabilir güç", format_range(r["kurulabilir_guc_kwp_aralik"], 1, "kWp"))
@@ -865,6 +932,14 @@ def show_cards(r, inputs=None, applied=False, building=None):
         cov_lo, cov_hi = (int(round_half_up(v, 0)) for v in r["fatura_karsilama_yuzde_aralik"])
         d4.metric("Faturanın karşılanan kısmı", f"%{cov_lo}" if cov_lo == cov_hi else f"%{cov_lo} – %{cov_hi}")
 
+
+def show_cards(r, inputs=None, applied=False, building=None):
+    if has_capacity(r):
+        _capacity_cards(r)
+    else:
+        st.warning(zero_capacity_warning(r))  # no 0 TL cost/discount cards; the rest of the page stays
+    show_face_status(r)
+
     c1, c2, c3 = st.columns(3)
     c1.metric("Uygunluk (arazi gölgesi)", f"%{tr_num(r['uygunluk_puani_yuzde'], 1)}")
     c1.caption("Şu an yalnızca arazi (tepe) gölgesi hesaba katılıyor. Komşu bina gölgesi bir sonraki aşamada eklenecek.")
@@ -885,9 +960,9 @@ def show_cards(r, inputs=None, applied=False, building=None):
 
     for warning in r["uyarilar"]:
         st.warning(warning + ".")
-    for flag in r["maliyet_bayraklari"]:
+    for flag in r["maliyet_bayraklari"] if has_capacity(r) else []:
         st.warning(cost.flag_message(flag))
-    for text in (coverage_text(r), remaining_bill_text(r)):
+    for text in (coverage_text(r), remaining_bill_text(r)) if has_capacity(r) else ():
         if text:
             st.info(text)
     if r["tuketim_varsayimi"]:
@@ -908,7 +983,7 @@ def show_cards(r, inputs=None, applied=False, building=None):
         for reason in r["guven_nedenleri"]:
             st.write(f"- {reason}")
         if inputs is not None:
-            measured, estimated, assumed = input_classes(inputs, applied, building)
+            measured, estimated, assumed = input_classes(inputs, applied, building, r)
             for title, items in (("Ölçülen", measured), ("Tahmin edilen", estimated), ("Varsayılan", assumed)):
                 if items:
                     st.write(f"**{title}:** " + "; ".join(items))
@@ -1097,7 +1172,8 @@ def _reset_clicked():
 def build_roof_map(center):
     """Static part of the roof map: Esri World Imagery (DISPLAY ONLY, attribution kept) and the Draw control
     (rectangle and polygon only; editing off, deleting on)."""
-    m = folium.Map(location=center, zoom_start=ROOF_VIEW_ZOOM, max_zoom=21, tiles=None)
+    # no scroll-wheel zoom: page scrolling must not be hijacked (the +/- buttons stay)
+    m = folium.Map(location=center, zoom_start=ROOF_VIEW_ZOOM, max_zoom=21, tiles=None, scroll_wheel_zoom=False)
     folium.TileLayer(
         tiles=ESRI_TILES_URL, attr=ESRI_ATTRIBUTION, name="Uydu (yalnızca görüntüleme)", max_native_zoom=19, max_zoom=21,
     ).add_to(m)
@@ -1119,13 +1195,15 @@ def _metric_ring_latlon(coords):
 
 
 def roof_label(roof, result):
-    """'N panel · X kWp · Y kWh/yıl · daire başına ~Z TL/ay' for the drawn scenario."""
+    """Label of the drawn scenario. Geometry mode: 'N panel · N×0,40 kWp · …'. Numeric mode: the kWp is not a panel
+    count, so it reads '≈X kWp (<source>; paneller temsilidir) · …' without the count."""
     sc = roof["scenario"]
-    n = drawn_panel_count(roof)
     discount = format_range(sc["paylasim"]["indirim_ay_ortalama_tl"], 0)
-    return (
-        f"{n} panel · {tr_num(sc['kwp'], 1)} kWp · {tr_num(sc['kwh'])} kWh/yıl · daire başına ~{discount} TL/ay"
-    )
+    tail = f"{tr_num(sc['kwh'])} kWh/yıl · daire başına ~{discount} TL/ay"
+    if roof["mode"] == "geometry":
+        return f"{drawn_panel_count(roof)} panel · {tr_num(sc['kwp'], 1)} kWp · {tail}"
+    source = NUMERIC_LABEL_SOURCE.get(result.get("guc_kaynagi"), NUMERIC_LABEL_SOURCE["ortalama"])
+    return f"≈{tr_num(sc['kwp'], 1)} kWp ({source}; paneller temsilidir) · {tail}"
 
 
 def drawn_panels(roof):
@@ -1228,6 +1306,7 @@ def roof_view_section(state, roof, result, building):
     notice, draw["notice"] = draw.get("notice"), None
     if notice:
         st.warning(notice)
+    st.caption(TRASH_NOTE)
     st.caption(ROOF_VIEW_CAPTION + " " + ESRI_ATTRIBUTION)
     st.caption(report.IMAGERY_NOTE)
 

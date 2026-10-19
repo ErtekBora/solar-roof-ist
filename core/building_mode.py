@@ -461,11 +461,13 @@ def _cost_band_range(scenarios):
 
 
 def chart_rows(result, months):
-    """Rows {Ay, Sıra, Grup, Seri, kWh} for the monthly chart: segment split per scenario (stacked by segment)."""
+    """Rows {Ay, Sıra, Grup, Seri, kWh} for the monthly chart: segment split per scenario (stacked by segment).
+
+    Only used segments appear; a scenario without any (0 kWp) adds no rows, so no misleading label is shown.
+    """
     rows = []
     for sc in result["senaryolar"]:
-        segs = [s for s in sc["segmentler"] if s["durum"] == "kullanildi"] or sc["segmentler"][:1]
-        for seg in segs:
+        for seg in (s for s in sc["segmentler"] if s["durum"] == "kullanildi"):
             for i, month in enumerate(months):
                 rows.append({"Ay": month, "Sıra": i, "Grup": sc["etiket"], "Seri": seg["ad"], "kWh": seg["aylik_kwh"][i]})
     return rows

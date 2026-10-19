@@ -10,6 +10,7 @@ from streamlit.testing.v1 import AppTest
 
 import app
 from core import building_mode, buildings, calc, config, drawings, explain, layout, report, solar
+from core.formatting import tr_num as tr
 from core.solar import _parse_pvcalc
 
 ROOT = Path(__file__).parent.parent
@@ -1335,3 +1336,74 @@ def test_small_fixes_help_list_bill_minimum_and_high_share_note(mocked, monkeypa
     assert note.startswith("Daire payı (≈") and note in [c.value for c in at.caption]
     _widget(at.number_input, BILL_LABEL).set_value(1500.0).run()
     assert not at.session_state["result"]["daire_payi_yuksek"]
+
+
+# ------------------------------------------- pitched-face fix: zero result, labels, texts, roof map
+
+def test_zero_capacity_replaces_only_the_card_block_and_keeps_the_rest(mocked, monkeypatch, building_point):
+    def weak(lat, lon, aspect, angle=30, horizon72=None):
+        face = _fake_face(lat, lon, aspect, angle)
+        return {**face, "e_y": face["e_y"] * 0.5, "e_m": [m * 0.5 for m in face["e_m"]]}  # every face < 80 %
+
+    monkeypatch.setattr(solar, "get_face_yield", weak)
+    at = _run_with_point(building_point)
+    _widget(at.radio, ROOF_LABEL).set_value("Tamamen eğimli").run()
+    _widget(at.radio, PITCHED_LABEL).set_value("Beşik (2 yüz)").run()
+    _button(at, "Hesapla").click().run()
+    assert not at.exception
+    assert app.ZERO_PITCHED_WARNING in [w.value for w in at.warning]
+    labels = [m.label for m in at.metric]
+    for gone in ("Kurulabilir güç", "Toplam kurulum maliyeti", "Tek seferlik maliyet", "Daire başına sabit indirim (yıllık)"):
+        assert gone not in labels
+    assert not any(w.value == "Kurulabilir panel yok." for w in at.warning)
+    assert "Güven seviyesi" in labels  # the rest of the page is still there
+    assert any(m.value == "**Çatı yüzleri**" for m in at.markdown)
+    assert any("yüzü: elendi" in m.value for m in at.markdown)
+    assert any(s.value == "Çatı görünümü" for s in at.subheader)
+    assert "Hesap dökümü" in [e.label for e in at.expander] and at.get("link_button")
+    assert any(i.value.startswith("Üretim yapan çatı bölümü yok") for i in at.info)
+
+
+def test_face_status_list_is_shown_for_every_face(mocked, building_point):
+    at = _run_with_point(building_point)
+    _widget(at.radio, ROOF_LABEL).set_value("Tamamen eğimli").run()
+    _button(at, "Hesapla").click().run()
+    r = at.session_state["result"]
+    status = next(m.value for m in at.markdown if m.value.startswith("- ") and "yüzü:" in m.value)
+    for seg in r["senaryolar"][0]["segmentler"]:
+        if seg["tur"] == "face":
+            assert f"- {seg['ad']}: " in status
+
+
+def test_obstacle_line_follows_the_drawing_or_the_no_obstacle_statement(mocked, map_calls, sample_index, building_point):
+    calls, box = map_calls
+    at = _after_hesapla(building_point)
+    texts = lambda: " ".join(m.value for m in at.markdown)
+    assert "Engeller: fotoğraf yok, ortalama kullanılabilir alan oranı" in texts()
+    box["roof"] = {"all_drawings": [_feature(_centre_obstacle(_roof_inputs(sample_index, building_point)))]}
+    at.run()
+    assert "Engeller: kullanıcı çizimi" in texts() and "ortalama kullanılabilir alan oranı" not in texts()
+    box["roof"] = {"all_drawings": None}
+    _button(at, "Engel yok, çatı boş").click().run()
+    assert "Engel yok (kullanıcı beyanı)" in texts()
+
+
+def test_roof_label_numeric_mode_has_no_panel_count_geometry_mode_has_n_times_0_40(mocked, sample_index, building_point):
+    inputs = _roof_inputs(sample_index, building_point)
+    analysis = _roof_analysis(inputs)
+    r, _, roof = app.evaluate(analysis, inputs, None, set(), _draw_state(inputs))
+    label = app.roof_label(roof, r)
+    assert label.startswith(f"≈{tr(r['senaryolar'][0]['kwp'], 1)} kWp (ortalama orana göre; paneller temsilidir)")
+    assert " panel ·" not in label
+    r, _, roof = app.evaluate(analysis, inputs, None, set(), _draw_state(inputs, [_centre_obstacle(inputs)]))
+    n = app.drawn_panel_count(roof)
+    assert app.roof_label(roof, r).startswith(f"{n} panel · {tr(n * config.PANEL_KWP, 1)} kWp")
+
+
+def test_roof_map_has_no_scroll_wheel_zoom_and_explains_the_trash_button(mocked, building_point):
+    m = app.build_roof_map([41.0, 29.0])
+    assert m.options["scroll_wheel_zoom"] is False
+    assert "scrollWheelZoom" in m.get_root().render()
+    at = _after_hesapla(building_point)
+    assert app.TRASH_NOTE in [c.value for c in at.caption]
+    assert app.TRASH_NOTE.startswith("Haritadaki çöp kutusu yalnızca son yeniden çizimden sonraki şekilleri siler")
