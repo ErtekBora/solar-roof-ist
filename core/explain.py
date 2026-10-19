@@ -69,7 +69,8 @@ Girdi, hesaplanmış sonuçları içeren bir JSON'dur. Yanıt KISA olsun: toplam
 4) Son satır AYNEN şu olsun: {WARNING_LINE}
 
 Kesin kurallar:
-- YALNIZCA girdideki sayıları kullan. Panel adedi, girdide olmayan süre veya tutar, teşvik, kredi koşulu veya girdide olmayan hiçbir yüzdeyi hesaplama ya da uydurma. Sayıları değiştirme, yeniden toplama veya bölme.
+- Panel adedini yalnızca panel_sayisi değeriyle aktar; guc_kaynagi kurulabilir gücün nereden geldiğini söyler (kullanıcı çizimi, fotoğraf veya ortalama oran). cizilen_engel_sayisi varsa engellerin kullanıcı tarafından çizildiğini söyle. daire_payi_tipik_tuketimden_yuksek true ise daire payının (daire_payi_kwh_ay) tipik hane tüketiminin üstünde olabileceğini ve fazla üretimin değerlendirilemeyebileceğini belirt, ortalama daire faturasının girilmesini öner.
+- YALNIZCA girdideki sayıları kullan. Girdide olmayan panel adedi, süre veya tutar, teşvik, kredi koşulu veya girdide olmayan hiçbir yüzdeyi hesaplama ya da uydurma. Sayıları değiştirme, yeniden toplama veya bölme.
 - Şu sözcükleri hiç kullanma: {banned}, kazanç süresi. Parasal kazancı anlatırken "tasarruf" de.
 - Tasarruf her daireye EŞİT TL indirim olarak verilir (herkes kurulumu eşit öder): daire_basi_tasarruf_tl_yil yıllık, daire_basi_indirim_tl_ay yıllık ortalama aylık indirimdir; "sabit indirim" de. Yıllık ortalama olduğunu, kışın az yazın çok olduğunu ve indirimin faturayı aşamayacağını belirt. Bireysel daire faturası isteme.
 - Girdideki alan (anahtar) adlarını ASLA yazma: alt çizgili hiçbir ad (örneğin kurulabilir_guc_kwp) metinde geçmesin; her şeyi doğal Türkçe ile söyle.
@@ -167,8 +168,8 @@ _SEGMENT_STATUS_TR = {
 
 
 def _add_building_payload(payload, r):
-    """Building-mode fields: structure, flats, ranges, cost, sharing, payback, assumption, segments."""
-    from core.building_mode import STRUCTURE_LABELS_TR
+    """Building-mode fields: structure, flats, ranges, cost, sharing, payback, assumption, segments, panel layout."""
+    from core.building_mode import CAPACITY_SOURCE_LABELS_TR, PITCHED_TYPE_LABELS_TR, STRUCTURE_LABELS_TR
 
     payload["cati_yapisi"] = STRUCTURE_LABELS_TR[r["cati_yapisi"]]
     if r.get("duz_pay_yuzde") is not None:
@@ -194,6 +195,21 @@ def _add_building_payload(payload, r):
         payload["tuketim_varsayimi"] = r["tuketim_varsayimi"]
         payload["mahsuplasma_varsayimi"] = r["mahsuplasma_notu"]
     payload["uyarilar"] = list(r.get("uyarilar") or [])
+    if r.get("panel_sayisi_aralik") is not None:
+        payload["panel_sayisi"] = _collapse(r["panel_sayisi_aralik"], 0)
+    if r.get("guc_kaynagi"):
+        payload["guc_kaynagi"] = CAPACITY_SOURCE_LABELS_TR[r["guc_kaynagi"]]
+    if r.get("egimli_tip") and r["cati_yapisi"] != "flat":
+        payload["egimli_cati_tipi"] = PITCHED_TYPE_LABELS_TR[r["egimli_tip"]]
+    if r.get("cizilen_engel_sayisi") is not None:
+        payload["cizilen_engel_sayisi"] = int(r["cizilen_engel_sayisi"])
+        if r["cizilen_engel_sayisi"]:
+            payload["cizilen_engel_alani_m2"] = round_half_up(r["cizilen_engel_alani_m2"], 1)
+    if r.get("teras_cizildi") is not None and r["cati_yapisi"] == "mixed":
+        payload["teras_cizildi"] = bool(r["teras_cizildi"])
+    if r.get("daire_payi_yuksek"):
+        payload["daire_payi_kwh_ay"] = _collapse(r["daire_payi_kwh_ay_aralik"], 0)
+        payload["daire_payi_tipik_tuketimden_yuksek"] = True
     payload["senaryolar"] = [
         {
             "etiket": sc["etiket"],
@@ -299,9 +315,12 @@ def validate_explanation_numbers(text, payload):
     cleaned = _clean_text(text)
     allowed = _allowed_values(payload)
 
-    forbidden_starts = set()
-    for rx in (_DURATION_RE, _PANEL_RE):
-        forbidden_starts.update(m.start() for m in rx.finditer(cleaned))
+    forbidden_starts = set(m.start() for m in _DURATION_RE.finditer(cleaned))
+    panel_counts = payload.get("panel_sayisi")
+    panel_counts = set(panel_counts) if isinstance(panel_counts, list) else {panel_counts}
+    for m in _PANEL_RE.finditer(cleaned):  # a panel count is valid only when it is the layout's own count
+        if int(re.match(r"\d+", m.group()).group()) not in panel_counts:
+            forbidden_starts.add(m.start())
     terms = forbidden_terms(payload)
     financial_spans = []
     pos = 0
@@ -383,6 +402,8 @@ def _building_fallback(p):
     s3 += "."
     if unknown:
         s4 = "En büyük belirsizlik çatı yapısı: tamamen düz ve tamamen eğimli çatı için aralık verildi."
+    elif p.get("cizilen_engel_sayisi") is not None:
+        s4 = f"Kurulabilir güç, çizdiğiniz engellere göre yerleşen {_fmt(p['panel_sayisi'])} panelden hesaplandı."
     elif not p["fotograf_var"]:
         s4 = "En büyük belirsizlik kullanılabilir alan: fotoğraf olmadığı için ortalama orana göre varsayıldı."
     elif p.get("engel_orani") is not None:
@@ -402,7 +423,12 @@ def _building_fallback(p):
         tips.append("- Engel tablosunu kontrol edin; çatıda olmayan engellerin işaretini kaldırarak sonucu güncelleyin.")
     if p["daire_sayisi_tahmini"]:
         tips.append("- Daire sayısı tahmindir; gerçek daire sayısını girin, daire başına rakamlar buna göre güncellenir.")
-    if p["tasarruf_yontemi"] == "genis_tahmin":
+    if p.get("daire_payi_tipik_tuketimden_yuksek"):
+        tips.insert(0, (
+            f"- Ortalama daire faturasını girin: daire payı (yaklaşık {_fmt(p['daire_payi_kwh_ay'])} kWh/ay) tipik bir "
+            "hane tüketiminin üstünde olabilir ve fazla üretim değerlendirilemeyebilir."
+        ))
+    elif p["tasarruf_yontemi"] == "genis_tahmin":
         tips.append("- Ortalama daire faturasını girin; tasarruf aralığı daralır.")
     relocatable = _relocatable_phrase(p)
     if relocatable:

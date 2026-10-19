@@ -455,3 +455,37 @@ def test_template_is_concise_and_does_not_repeat_screen_notes():
         assert note not in text
     for word in ("mahsuplaşma", "aidat", "KDV", "güçlendirme", "inverter"):
         assert word not in text
+
+
+# --------------------------------------------------------- panel layout fields (roof view)
+
+def test_panel_count_is_valid_only_when_it_is_the_layout_count():
+    payload = {"panel_sayisi": 42}
+    assert validate_explanation_numbers("Çatıya 42 panel yerleşti", payload) == (True, [])
+    assert validate_explanation_numbers("Çatıya 43 panel yerleşti", {**payload, "x": 43}) == (False, [43.0])
+    assert validate_explanation_numbers("30 panel", {"panel_sayisi": [30, 80]})[0]
+
+
+def test_payload_carries_layout_fields_and_template_validates(result):
+    r = {
+        **result, "panel_sayisi_aralik": [52, 52], "guc_kaynagi": "geometri", "egimli_tip": "hip",
+        "cizilen_engel_sayisi": 2, "cizilen_engel_alani_m2": 6.54, "teras_cizildi": False,
+        "daire_payi_yuksek": True, "daire_payi_kwh_ay_aralik": [251.2, 251.2],
+    }
+    p = build_payload(r)
+    assert p["panel_sayisi"] == 52 and p["guc_kaynagi"] == "kullanıcı çizimi (panel yerleşimi)"
+    assert p["cizilen_engel_sayisi"] == 2 and p["cizilen_engel_alani_m2"] == 6.5
+    assert p["daire_payi_kwh_ay"] == 251 and p["daire_payi_tipik_tuketimden_yuksek"] is True
+    if r["cati_yapisi"] != "flat":
+        assert p["egimli_cati_tipi"] == "Kırma (4 yüz)"
+    text = build_fallback_explanation(r)
+    assert validate_explanation_numbers(text, p) == (True, [])
+    assert "52 panel" in text and "251 kWh/ay" in text
+    from core.explain import find_field_names
+
+    assert find_field_names(text, p) == []
+
+
+def test_no_drawing_fields_without_a_drawing(result):
+    p = build_payload({**result, "cizilen_engel_sayisi": None, "daire_payi_yuksek": False})
+    assert "cizilen_engel_sayisi" not in p and "cizilen_engel_alani_m2" not in p and "daire_payi_kwh_ay" not in p

@@ -10,15 +10,21 @@ from core.config import (
     CO2_FACTOR_T_PER_MWH,
     COST_SOURCE,
     DEFAULT_ROOF_PITCH_DEG,
+    EDGE_FACTOR,
     FACE_MIN_YIELD_RATIO,
     FLAT_GROSS_AREA_M2,
     LEVEL_HEIGHT_M,
     M2_PER_KWP_FLAT,
     M2_PER_KWP_PITCHED,
+    PANEL_KWP,
     PAYBACK_MAX_YEARS,
+    SETBACK_M,
     TARIFF_SOURCE,
+    USABLE_RATIO_NO_PHOTO,
 )
 from core.cost import clamp_flats
+from core.formatting import round_half_up, tr_num
+from core.solar import normalize_aspect
 
 STRUCTURES = ("flat", "pitched", "mixed", "unknown")
 STRUCTURE_LABELS_TR = {
@@ -28,6 +34,20 @@ STRUCTURE_LABELS_TR = {
     "unknown": "Bilmiyorum",
 }
 MIN_SAVINGS_TL_YR = 1.0  # a savings bound below this gives no payback bound
+PITCHED_TYPES = ("hip", "gable")
+PITCHED_TYPE_LABELS_TR = {"hip": "Kırma (4 yüz)", "gable": "Beşik (2 yüz)"}
+FLAT_SEGMENT = "Düz teras"
+# where the usable capacity comes from (priority: user drawing > photo obstacle ratio > average share)
+CAPACITY_SOURCE_LABELS_TR = {
+    "geometri": "kullanıcı çizimi (panel yerleşimi)",
+    "fotograf": "fotoğraftaki engel oranı",
+    "ortalama": "ortalama kullanılabilir alan oranı",
+    "engel_yok": "kullanıcı onayı: çatıda engel yok",
+}
+HIGH_SHARE_NOTE = (
+    "Daire payı (≈{kwh} kWh/ay) tipik bir hane tüketiminin üstünde olabilir; fazla üretim değerlendirilemeyebilir. "
+    "Netleştirmek için ortalama daire faturasını girin."
+)
 
 ASSUMPTION_CONSTANT_CONSUMPTION = (
     "Girilen fatura yılın her ayı için ortalama tüketim kabul edilmiştir; mevsimsel farklar (klima, ısıtıcı) "
@@ -99,11 +119,21 @@ def face_azimuths(ridge_azimuth_deg):
     return [first, (first + 180) % 360]
 
 
-def face_specs(ridge_azimuth_deg):
-    """[{name, azimuth_deg, aspect}] for the two faces; `aspect` is what PVGIS PVcalc needs."""
+def face_specs(ridge_azimuth_deg, pitched_type="gable"):
+    """[{name, azimuth_deg, aspect, weight}] for the pitched faces; `aspect` is what PVGIS PVcalc needs (1 degree).
+
+    Gable: the two faces perpendicular to the ridge, 1/2 each. Hip: those two plus the two hip ends facing along the
+    ridge, 1/4 each (the square assumption used when there is no footprint).
+    """
+    if pitched_type not in PITCHED_TYPES:
+        raise ValueError(f"pitched_type must be one of {PITCHED_TYPES}")
+    azimuths = face_azimuths(ridge_azimuth_deg)
+    if pitched_type == "hip":
+        azimuths += [ridge_azimuth_deg % 360, (ridge_azimuth_deg + 180) % 360]
     return [
-        {"name": compass_tr(a), "azimuth_deg": a, "aspect": to_pvgis_aspect(a)}
-        for a in face_azimuths(ridge_azimuth_deg)
+        {"name": compass_tr(a), "azimuth_deg": a, "aspect": normalize_aspect(to_pvgis_aspect(a)),
+         "weight": 1 / len(azimuths)}
+        for a in azimuths
     ]
 
 
@@ -121,32 +151,56 @@ def roof_scenarios(structure, flat_share_pct=50):
     return [(STRUCTURE_LABELS_TR["flat"], 1.0), (STRUCTURE_LABELS_TR["pitched"], 0.0)]
 
 
-def compute_segments(usable_plan_m2, flat_share, flat_solar, faces):
-    """Split the usable PLAN area into a flat segment and two pitched faces and compute kWp and monthly kWh.
+def face_segment_name(face_name):
+    return f"{face_name} yüzü"
+
+
+def numeric_panel_count(kwp):
+    """Whole panels drawn for a numeric kWp: floor(kWp / PANEL_KWP)."""
+    return int(math.floor(kwp / PANEL_KWP + 1e-9)) if _is_number(kwp) and kwp > 0 else 0
+
+
+def compute_segments(usable_plan_m2, flat_share, flat_solar, faces, geometry=None):
+    """Split the usable PLAN area into a flat segment and the pitched faces and compute kWp and monthly kWh.
 
     flat_solar: result of core.solar.get_solar_yield (the SHADED run is the flat-optimal reference).
-    faces: [{name, azimuth_deg, aspect, solar}] with solar = a PVcalc result or None (call failed).
-    Flat: kWp = plan / 6.5. Face: surface = plan / cos(pitch); kWp = surface / 5.5. A face below 80 % of the
-    flat segment's shaded specific yield is dropped (0 kWp, 0 kWh).
+    faces: [{name, azimuth_deg, aspect, solar, weight}] with solar = a PVcalc result or None (call failed) and
+    weight = the face's share of the pitched plan area (proportional to its intersected plan area; equal if missing).
+    Numeric: flat kWp = plan / 6.5; face surface = plan / cos(pitch), kWp = surface / 5.5.
+    geometry = {segment name: {"plan_m2", "panels"}} from the panel layout (user-drawn obstacles): kWp = panels x
+    PANEL_KWP and the plan areas are the geometric ones; the usable share is not used.
+    A face below 80 % of the flat segment's shaded specific yield is dropped (0 kWp, 0 kWh, 0 panels).
     """
-    usable = max(0.0, usable_plan_m2 or 0.0)
     share = min(1.0, max(0.0, flat_share))
     flat_ref = flat_solar["shaded"]
-    flat_plan = usable * share
-    face_plan = usable * (1 - share) / 2
-    flat_kwp = flat_plan / M2_PER_KWP_FLAT
+    empty = {"plan_m2": 0.0, "panels": 0}
+    if geometry is None:
+        usable = max(0.0, usable_plan_m2 or 0.0)
+        flat_plan = usable * share
+        flat_kwp = flat_plan / M2_PER_KWP_FLAT
+        flat_panels = numeric_panel_count(flat_kwp)
+    else:
+        g = geometry.get(FLAT_SEGMENT, empty)
+        flat_plan, flat_panels = g["plan_m2"], int(g["panels"])
+        flat_kwp = flat_panels * PANEL_KWP
+        usable = flat_plan + sum(geometry.get(face_segment_name(f["name"]), empty)["plan_m2"] for f in faces)
     flat_seg = {
-        "ad": "Düz teras", "tur": "flat", "durum": "kullanildi" if flat_plan > 0 else "kullanilmadi",
-        "plan_m2": flat_plan, "kwp": flat_kwp, "e_y": flat_ref["e_y"],
+        "ad": FLAT_SEGMENT, "tur": "flat", "durum": "kullanildi" if flat_plan > 0 else "kullanilmadi",
+        "plan_m2": flat_plan, "kwp": flat_kwp, "e_y": flat_ref["e_y"], "panel_sayisi": flat_panels,
         "aylik_kwh": [flat_kwp * m for m in flat_ref["e_m"]],
     }
     face_segs, warnings = [], []
     for face in faces:
+        name = face_segment_name(face["name"])
+        if geometry is None:
+            face_plan = usable * (1 - share) * face.get("weight", 1 / len(faces))
+        else:
+            face_plan = geometry.get(name, empty)["plan_m2"]
         surface = face_plan / math.cos(math.radians(DEFAULT_ROOF_PITCH_DEG))
         seg = {
-            "ad": face["name"] + " yüzü", "tur": "face", "yon": face["name"], "azimut_derece": face["azimuth_deg"],
+            "ad": name, "tur": "face", "yon": face["name"], "azimut_derece": face["azimuth_deg"],
             "aspect": face["aspect"], "plan_m2": face_plan, "yuzey_m2": surface, "durum": "kullanildi",
-            "kwp": 0.0, "e_y": None, "verim_orani": None, "aylik_kwh": [0.0] * 12,
+            "kwp": 0.0, "e_y": None, "verim_orani": None, "aylik_kwh": [0.0] * 12, "panel_sayisi": 0,
         }
         solar = face.get("solar")
         if face_plan <= 0:
@@ -161,7 +215,12 @@ def compute_segments(usable_plan_m2, flat_share, flat_solar, faces):
                 seg["durum"] = "elendi"
                 warnings.append(f"{_DATIVE_TR[face['name']]} bakan çatı yüzü verimsiz olduğu için hesaba katılmadı")
             else:
-                seg["kwp"] = surface / M2_PER_KWP_PITCHED
+                if geometry is None:
+                    seg["kwp"] = surface / M2_PER_KWP_PITCHED
+                    seg["panel_sayisi"] = numeric_panel_count(seg["kwp"])
+                else:
+                    seg["panel_sayisi"] = int(geometry.get(name, empty)["panels"])
+                    seg["kwp"] = seg["panel_sayisi"] * PANEL_KWP
                 seg["aylik_kwh"] = [seg["kwp"] * m for m in solar["e_m"]]
         face_segs.append(seg)
     segments = [flat_seg, *face_segs]
@@ -170,9 +229,19 @@ def compute_segments(usable_plan_m2, flat_share, flat_solar, faces):
     return {
         "duz_pay": share, "kullanilabilir_plan_m2": usable, "segmentler": segments, "kwp": kwp,
         "aylik_kwh": monthly, "kwh": sum(monthly),
+        "panel_sayisi": sum(s["panel_sayisi"] for s in segments if s["durum"] == "kullanildi"),
         "uyarilar": list(dict.fromkeys(warnings)),
         "alinamayan_yuz": sum(1 for s in face_segs if s["durum"] == "alinamadi"),
         "elenen_yuz": sum(1 for s in face_segs if s["durum"] == "elendi"),
+    }
+
+
+def unusable_faces(flat_solar, faces):
+    """Segment names of the faces that get no panels: below the 80 % rule or without PVGIS data."""
+    ref = flat_solar["shaded"]["e_y"]
+    return {
+        face_segment_name(f["name"]) for f in faces
+        if f.get("solar") is None or ref <= 0 or f["solar"]["e_y"] / ref < FACE_MIN_YIELD_RATIO
     }
 
 
@@ -245,6 +314,7 @@ def _scenario(label, seg, n, bill):
         "etiket": label, "duz_pay": seg["duz_pay"], "kwp": seg["kwp"], "kwh": seg["kwh"],
         "aylik_kwh": seg["aylik_kwh"], "segmentler": seg["segmentler"], "uyarilar": seg["uyarilar"],
         "alinamayan_yuz": seg["alinamayan_yuz"], "elenen_yuz": seg["elenen_yuz"],
+        "panel_sayisi": seg["panel_sayisi"], "kullanilabilir_plan_m2": seg["kullanilabilir_plan_m2"],
         "maliyet_tl": [kwp_cost[0], kwp_cost[1]], "maliyet_bandi": kwp_cost[2], "maliyet_bayraklari": kwp_cost[3],
         "paylasim": share,
     }
@@ -252,9 +322,15 @@ def _scenario(label, seg, n, bill):
 
 def analyze_building(
     *, roof_area_m2, usable_base_area_m2, obstacle_ratio, image_view, structure, flat_share_pct, n_flats,
-    n_flats_estimated, bill_tl, flat_solar, faces,
+    n_flats_estimated, bill_tl, flat_solar, faces, pitched_type="gable", geometry=None, capacity_source=None,
+    drawn=None,
 ):
-    """Full building-mode result (Turkish keys): segments per scenario, ranges, cost, sharing, payback, confidence."""
+    """Full building-mode result (Turkish keys): segments per scenario, ranges, cost, sharing, payback, confidence.
+
+    geometry: None (numeric capacity) or one {segment: {"plan_m2", "panels"}} per scenario of `roof_scenarios`
+    (user-drawn obstacles: kWp = panels x PANEL_KWP). capacity_source: "geometri" | "fotograf" | "ortalama" |
+    "engel_yok" (derived when None). drawn: {"count", "area_m2", "terrace", "marked"} from the roof drawing.
+    """
     if not _is_number(roof_area_m2) or roof_area_m2 <= 0:
         raise ValueError("roof_area_m2 must be > 0")
     if obstacle_ratio is not None and (not _is_number(obstacle_ratio) or not 0 <= obstacle_ratio < 1):
@@ -267,9 +343,17 @@ def analyze_building(
     usable = calc.usable_plan_area(roof_area_m2, obstacle_ratio, usable_base_area_m2)
     ideal, shaded = flat_solar["ideal"], flat_solar["shaded"]
 
+    if pitched_type not in PITCHED_TYPES:
+        raise ValueError(f"pitched_type must be one of {PITCHED_TYPES}")
+    if capacity_source is None:
+        capacity_source = "geometri" if geometry is not None else ("fotograf" if obstacle_ratio is not None else "ortalama")
+    drawn = drawn or {}
     scenarios = []
-    for label, share in roof_scenarios(structure, flat_share_pct):
-        scenarios.append(_scenario(label, compute_segments(usable, share, flat_solar, faces), n, bill))
+    for i, (label, share) in enumerate(roof_scenarios(structure, flat_share_pct)):
+        geo = geometry[i] if geometry is not None else None
+        scenarios.append(_scenario(label, compute_segments(usable, share, flat_solar, faces, geo), n, bill))
+    if geometry is not None:
+        usable = scenarios[0]["kullanilabilir_plan_m2"]
 
     total_cost = cost.combine_cost_scenarios([s["maliyet_tl"] for s in scenarios])
     flat_cost = cost.per_flat_cost(total_cost, n)
@@ -281,8 +365,11 @@ def analyze_building(
     pitched_used = any(s["duz_pay"] < 1 for s in scenarios)
     unavailable = max((s["alinamayan_yuz"] for s in scenarios), default=0) if pitched_used else 0
     level, reasons, improve = calc.building_confidence(
-        image_view, has_polygon, structure != "unknown", unavailable, with_bill, n_flats_estimated
+        image_view, has_polygon, structure != "unknown", unavailable, with_bill, n_flats_estimated,
+        obstacles_marked=bool(drawn.get("marked")),
     )
+    share_kwh = _span([s["kwh"] / n / 12 for s in scenarios])
+    base_area = usable_base_area_m2 if has_polygon else roof_area_m2
     warnings = list(dict.fromkeys(w for s in scenarios for w in s["uyarilar"]))
     suitability = min(100.0, max(0.0, shaded["e_y"] / ideal["e_y"] * 100))
     sharing = [s["paylasim"] for s in scenarios]
@@ -334,8 +421,38 @@ def analyze_building(
         "guven_seviyesi": level,
         "guven_nedenleri": reasons,
         "guven_iyilestirme": improve,
+        "egimli_tip": pitched_type,
+        "guc_kaynagi": capacity_source,
+        "panel_sayisi_aralik": _span([s["panel_sayisi"] for s in scenarios]),
+        "kenar_boslugu_m": SETBACK_M if has_polygon else None,
+        "kenar_sonrasi_alan_m2": usable_base_area_m2,
+        "kullanilabilir_oran": _usable_ratio(capacity_source, obstacle_ratio, has_polygon),
+        "alan_tabani_m2": base_area,
+        "cizilen_engel_sayisi": drawn.get("count") if drawn.get("marked") else None,
+        "cizilen_engel_alani_m2": drawn.get("area_m2") if drawn.get("marked") else None,
+        "teras_cizildi": bool(drawn.get("terrace")),
+        "daire_payi_kwh_ay_aralik": share_kwh,
+        "daire_payi_yuksek": not with_bill and share_kwh[1] > calc.LIMIT,
     }
     return result
+
+
+def _usable_ratio(source, obstacle_ratio, has_polygon):
+    """Share applied to the area base in the numeric modes (None in geometry mode)."""
+    if source == "geometri":
+        return None
+    if obstacle_ratio is None:
+        return USABLE_RATIO_NO_PHOTO / EDGE_FACTOR if has_polygon else USABLE_RATIO_NO_PHOTO
+    return (1 - obstacle_ratio) if has_polygon else EDGE_FACTOR * (1 - obstacle_ratio)
+
+
+def high_share_note(result):
+    """Turkish note when (without a bill) a flat's monthly share exceeds the 240 kWh tier limit, else None."""
+    if not result.get("daire_payi_yuksek"):
+        return None
+    lo, hi = result["daire_payi_kwh_ay_aralik"]
+    text = tr_num(hi) if round_half_up(lo) == round_half_up(hi) else f"{tr_num(lo)}–{tr_num(hi)}"
+    return HIGH_SHARE_NOTE.format(kwh=text)
 
 
 def _cost_band_range(scenarios):

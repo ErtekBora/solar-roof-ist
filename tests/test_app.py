@@ -3,12 +3,13 @@ from pathlib import Path
 
 import folium
 import pytest
+import shapely
 import streamlit as st
 from pyproj import Transformer
 from streamlit.testing.v1 import AppTest
 
 import app
-from core import building_mode, buildings, calc, config, explain, solar
+from core import building_mode, buildings, calc, config, drawings, explain, layout, report, solar
 from core.solar import _parse_pvcalc
 
 ROOT = Path(__file__).parent.parent
@@ -20,6 +21,7 @@ BILL_LABEL = "Ortalama aylık daire faturası (TL)"
 FLATS_LABEL = "Daire sayısı"
 ROOF_LABEL = "Çatı yapısı"
 SHARE_LABEL = "Düz teras payı (%)"
+PITCHED_LABEL = "Eğimli çatı tipi"
 
 
 def _fake_yield(lat, lon, horizon72=None):
@@ -42,9 +44,8 @@ def _bundle(ridge=0.0):
 
 @pytest.fixture
 def mocked(monkeypatch):
-    monkeypatch.setattr(app, "get_solar_yield", _fake_yield)
-    monkeypatch.setattr(solar, "get_solar_yield", _fake_yield)  # AppTest re-executes app.py
-    monkeypatch.setattr(app, "get_face_yield", _fake_face)
+    # app.py fetches through core.solar.fetch_roof_yields, which looks these up at call time (also under AppTest)
+    monkeypatch.setattr(solar, "get_solar_yield", _fake_yield)
     monkeypatch.setattr(solar, "get_face_yield", _fake_face)
     monkeypatch.setattr(config, "BUILDINGS_PARQUET", SAMPLE)
     monkeypatch.setattr(config, "get_gemini_api_key", lambda: "test-key")  # never read the real secrets file
@@ -276,11 +277,12 @@ def test_recenter_flag_is_consumed_after_one_use(sample_index, building_point):
 def map_calls(monkeypatch):
     import streamlit_folium
 
-    calls, box = [], {"value": {"last_clicked": None}}
+    # box["value"]: what the main map returns; box["roof"]: what the roof map (key roof_view_<gen>) returns
+    calls, box = [], {"value": {"last_clicked": None}, "roof": {"all_drawings": None}}
 
     def fake(fig, **kwargs):
         calls.append(kwargs)
-        return box["value"]
+        return box["roof"] if str(kwargs.get("key", "")).startswith("roof_view") else box["value"]
 
     monkeypatch.setattr(streamlit_folium, "st_folium", fake)
     return calls, box
@@ -994,7 +996,6 @@ def test_a_failed_pitched_face_still_produces_a_result_with_a_warning(mocked, mo
             raise solar.SolarDataError("PVGIS yok")
         return _fake_face(lat, lon, aspect, angle)
 
-    monkeypatch.setattr(app, "get_face_yield", flaky)
     monkeypatch.setattr(solar, "get_face_yield", flaky)
     at = _run_with_point(building_point)
     _button(at, "Hesapla").click().run()
@@ -1010,7 +1011,6 @@ def test_a_failed_flat_call_keeps_the_existing_error_behaviour(mocked, monkeypat
     def boom(lat, lon, horizon72=None):
         raise solar.SolarDataError("PVGIS sunucusuna ulaşılamadı.")
 
-    monkeypatch.setattr(app, "get_solar_yield", boom)
     monkeypatch.setattr(solar, "get_solar_yield", boom)
     at = _run_with_point(building_point)
     _button(at, "Hesapla").click().run()
@@ -1018,7 +1018,7 @@ def test_a_failed_flat_call_keeps_the_existing_error_behaviour(mocked, monkeypat
     assert "analysis" not in at.session_state
 
 
-def test_hesapla_makes_two_face_calls_with_the_ridge_aspects_and_structure_changes_make_none(
+def test_hesapla_makes_four_unique_face_calls_and_structure_or_subtype_changes_make_none(
     mocked, monkeypatch, sample_index, building_point
 ):
     seen = []
@@ -1027,16 +1027,18 @@ def test_hesapla_makes_two_face_calls_with_the_ridge_aspects_and_structure_chang
         seen.append(aspect)
         return _fake_face(lat, lon, aspect, angle)
 
-    monkeypatch.setattr(app, "get_face_yield", spy)
     monkeypatch.setattr(solar, "get_face_yield", spy)
     at = _run_with_point(building_point)
     _button(at, "Hesapla").click().run()
     found = buildings.find_building(sample_index, *building_point)["building"]
-    expected = sorted(s["aspect"] for s in building_mode.face_specs(found["ridge_azimuth_deg"]))
-    assert sorted(seen) == expected
+    footprint = shapely.from_wkb(found["footprint_wkb_m"])
+    expected = sorted({f["aspect"] for f in layout.roof_faces(footprint, "hip")})
+    assert sorted(seen) == expected and len(seen) == 4  # gable aspects are the hip long-side aspects
     n = len(seen)
     _widget(at.radio, ROOF_LABEL).set_value("Tamamen eğimli").run()
     assert len(seen) == n  # a roof-structure change never calls PVGIS again
+    _widget(at.radio, PITCHED_LABEL).set_value("Beşik (2 yüz)").run()
+    assert len(seen) == n and at.session_state["result"]["egimli_tip"] == "gable"  # nor does a sub-type change
 
 
 def test_discount_notes_are_shown_under_the_savings_card(mocked, building_point):
@@ -1096,3 +1098,240 @@ def test_explanation_text_renders_verdict_paragraph_tips_and_warning(mocked):
     assert any(m.value.startswith("**") for m in at.markdown)
     assert any("statik taşıma" in w.value for w in at.warning)
     assert not any("Bina toplamı yılda yaklaşık" in w.value for w in at.warning)  # the paragraph is plain text, not a warning
+
+
+# ------------------------------------------------------------ roof view, layout, hip roofs
+
+def _roof_inputs(sample_index, building_point, structure="pitched", pitched="hip", **extra):
+    found = buildings.find_building(sample_index, *building_point)["building"]
+    return {
+        "lat": building_point[0], "lon": building_point[1], "area": found["area_m2"],
+        "usable_base_area_m2": found["setback_area_m2"], "footprint_wkb_m": found["footprint_wkb_m"],
+        "structure": structure, "flat_share_pct": 50, "n_flats": 4, "n_flats_estimated": False, "bill": None,
+        "roof_tag": "Kullanıcı girdisi", "pitched_type": pitched, "photo_applies": True, "building": found, **extra,
+    }
+
+
+def _roof_analysis(inputs, north_factor=0.55):
+    yields = {}
+    for a in app.pvgis_aspects(inputs):
+        face = _fake_face(inputs["lat"], inputs["lon"], a)
+        yields[a] = face
+    return {"solar": _fake_yield(inputs["lat"], inputs["lon"]), "face_yields": yields}
+
+
+def _feature(poly_m):
+    xs, ys = poly_m.exterior.xy
+    lons, lats = drawings.to_wgs84(list(xs), list(ys))
+    return {"type": "Feature", "properties": {}, "geometry": {"type": "Polygon", "coordinates": [[[lo, la] for lo, la in zip(lons, lats)]]}}
+
+
+def _draw_state(inputs, obstacles=(), terrace=None, empty=False):
+    footprint = shapely.from_wkb(inputs["footprint_wkb_m"])
+    state = drawings.new_state(inputs["building"]["id"])
+    if obstacles:
+        drawings.sync(state, [_feature(o) for o in obstacles], drawings.OBSTACLE, footprint)
+    if terrace is not None:
+        drawings.sync(state, [_feature(o) for o in obstacles] + [_feature(terrace)], drawings.TERRACE, footprint)
+    if empty:
+        drawings.confirm_empty(state)
+    return state
+
+
+def _centre_obstacle(inputs, size=2.0):
+    c = shapely.from_wkb(inputs["footprint_wkb_m"]).centroid
+    return shapely.box(c.x - size / 2, c.y - size / 2, c.x + size / 2, c.y + size / 2)
+
+
+def test_without_drawings_the_numeric_kwp_stays_and_exactly_that_many_panels_are_drawn(mocked, sample_index, building_point):
+    inputs = _roof_inputs(sample_index, building_point)
+    r, _, roof = app.evaluate(_roof_analysis(inputs), inputs, None, set(), _draw_state(inputs))
+    assert r["guc_kaynagi"] == "ortalama" and roof["mode"] == "numeric" and app.NOTE_AVERAGE in roof["notes"]
+    expected = sum(int(s["kwp"] / config.PANEL_KWP + 1e-9) for s in r["senaryolar"][0]["segmentler"] if s["durum"] == "kullanildi")
+    assert app.drawn_panel_count(roof) == expected == r["panel_sayisi_aralik"][0]
+    assert r["senaryolar"][0]["kwp"] != pytest.approx(expected * config.PANEL_KWP)  # numeric kWp is not n x 0.40
+
+
+def test_drawn_obstacles_switch_to_geometry_mode_with_panel_count_times_0_40(mocked, sample_index, building_point):
+    inputs = _roof_inputs(sample_index, building_point)
+    analysis = _roof_analysis(inputs)
+    draw = _draw_state(inputs, [_centre_obstacle(inputs)])
+    r, _, roof = app.evaluate(analysis, inputs, None, set(), draw)
+    sc = r["senaryolar"][0]
+    assert r["guc_kaynagi"] == "geometri" and roof["mode"] == "geometry" and roof["limits"] is None
+    assert sc["kwp"] == pytest.approx(sc["panel_sayisi"] * config.PANEL_KWP)
+    assert app.drawn_panel_count(roof) == sc["panel_sayisi"] > 0
+    # kWh from the stored specific yields, cost from the cost tool: no new PVGIS call
+    kwh = sum(seg["kwp"] * sum(analysis["face_yields"][seg["aspect"]]["e_m"]) for seg in sc["segmentler"] if seg["durum"] == "kullanildi")
+    assert sc["kwh"] == pytest.approx(kwh)
+    assert sc["maliyet_tl"] == pytest.approx(list(building_mode.cost.estimate_install_cost(sc["kwp"])[:2]))
+    assert "Engeller kullanıcı tarafından işaretlendi." in r["guven_nedenleri"]
+    assert r["guven_seviyesi"] == "Orta"  # never above Orta (neighbour shading still missing)
+    assert r["cizilen_engel_sayisi"] == 1 and r["cizilen_engel_alani_m2"] == pytest.approx(4.0, rel=1e-3)
+    empty, _, _ = app.evaluate(analysis, inputs, None, set(), _draw_state(inputs, empty=True))
+    assert empty["guc_kaynagi"] == "geometri" and empty["senaryolar"][0]["panel_sayisi"] > sc["panel_sayisi"]
+
+
+def test_drawn_panels_never_overlap_obstacles_and_dropped_faces_stay_empty(mocked, sample_index, building_point):
+    inputs = _roof_inputs(sample_index, building_point)
+    obstacle = _centre_obstacle(inputs, 3.0)
+    r, _, roof = app.evaluate(_roof_analysis(inputs), inputs, None, set(), _draw_state(inputs, [obstacle]))
+    panels = shapely.polygons(next(p for p in app.drawn_panels(roof).values() if len(p)))
+    assert (shapely.area(shapely.intersection(panels, obstacle.buffer(0.5))) <= 1e-6).all()
+    dropped = {s["ad"] for s in r["senaryolar"][0]["segmentler"] if s["durum"] == "elendi"}
+    assert dropped and dropped == set(roof["skip"]) and not dropped & set(roof["layouts"])
+
+
+def test_unknown_structure_in_geometry_mode_gives_a_range_and_draws_the_flat_layout(mocked, sample_index, building_point):
+    inputs = _roof_inputs(sample_index, building_point, structure="unknown")
+    r, _, roof = app.evaluate(_roof_analysis(inputs), inputs, None, set(), _draw_state(inputs, [_centre_obstacle(inputs)]))
+    kwps = [sc["panel_sayisi"] * config.PANEL_KWP for sc in r["senaryolar"]]
+    assert len(kwps) == 2 and kwps[0] != pytest.approx(kwps[1])
+    assert r["kurulabilir_guc_kwp_aralik"] == pytest.approx([min(kwps), max(kwps)])
+    assert r["panel_sayisi_aralik"] == sorted(sc["panel_sayisi"] for sc in r["senaryolar"])
+    assert r["yillik_uretim_kwh_aralik"] == pytest.approx(sorted(sc["kwh"] for sc in r["senaryolar"]))
+    assert app.NOTE_FLAT_ASSUMED_GEOMETRY in roof["notes"] and list(roof["layouts"]) == [layout.FLAT_SEGMENT]
+
+
+def test_karma_with_obstacles_but_no_terrace_stays_numeric_with_a_hint(mocked, sample_index, building_point):
+    inputs = _roof_inputs(sample_index, building_point, structure="mixed")
+    analysis = _roof_analysis(inputs)
+    plain, _, _ = app.evaluate(analysis, inputs, None, set(), _draw_state(inputs))
+    r, _, roof = app.evaluate(analysis, inputs, None, set(), _draw_state(inputs, [_centre_obstacle(inputs)]))
+    assert r["guc_kaynagi"] == "ortalama" and r["kurulabilir_guc_kwp_aralik"] == pytest.approx(plain["kurulabilir_guc_kwp_aralik"])
+    assert layout.MSG_KARMA_NEEDS_TERRACE in roof["notes"] and layout.MSG_NO_TERRACE_DRAWN in roof["notes"]
+    assert "Engeller kullanıcı tarafından işaretlendi." not in r["guven_nedenleri"]  # the drawing is not used yet
+    assert layout.FLAT_SEGMENT not in roof["layouts"]  # only the pitched faces are drawn
+
+
+def test_karma_empty_roof_confirmed_without_terrace_is_numeric_with_ratio_zero(mocked, sample_index, building_point):
+    inputs = _roof_inputs(sample_index, building_point, structure="mixed")
+    r, ratio, roof = app.evaluate(_roof_analysis(inputs), inputs, None, set(), _draw_state(inputs, empty=True))
+    assert ratio == 0.0 and r["guc_kaynagi"] == "engel_yok" and r["engel_orani"] == 0.0
+    assert r["kullanilabilir_alan_m2"] == pytest.approx(inputs["usable_base_area_m2"], abs=0.01)  # photo rule, ratio 0
+    assert roof["mode"] == "numeric_clean" and layout.MSG_KARMA_NEEDS_TERRACE in roof["notes"]
+
+
+def test_karma_with_a_terrace_uses_geometry_for_both_parts(mocked, sample_index, building_point):
+    inputs = _roof_inputs(sample_index, building_point, structure="mixed")
+    fp = shapely.from_wkb(inputs["footprint_wkb_m"])
+    minx, miny, maxx, maxy = fp.bounds
+    terrace = shapely.box(minx, miny, (minx + maxx) / 2, maxy).intersection(fp)
+    r, _, roof = app.evaluate(_roof_analysis(inputs), inputs, None, set(), _draw_state(inputs, [_centre_obstacle(inputs)], terrace))
+    segs = {s["ad"]: s for s in r["senaryolar"][0]["segmentler"]}
+    assert r["guc_kaynagi"] == "geometri" and r["teras_cizildi"] and segs[layout.FLAT_SEGMENT]["panel_sayisi"] > 0
+    assert any(s["tur"] == "face" and s["panel_sayisi"] > 0 for s in segs.values())
+    assert r["duz_pay_yuzde"] == round(100 * segs[layout.FLAT_SEGMENT]["plan_m2"] / r["kullanilabilir_alan_m2"])
+
+
+def test_gable_and_hip_give_different_kwp_for_the_same_building(mocked, sample_index, building_point):
+    hip = _roof_inputs(sample_index, building_point, pitched="hip")
+    gable = _roof_inputs(sample_index, building_point, pitched="gable")
+    analysis = _roof_analysis(hip)
+    r_hip, _, _ = app.evaluate(analysis, hip, None, set(), _draw_state(hip))
+    r_gable, _, _ = app.evaluate(analysis, gable, None, set(), _draw_state(gable))
+    assert len(r_hip["senaryolar"][0]["segmentler"]) == 5 and len(r_gable["senaryolar"][0]["segmentler"]) == 3
+    assert r_hip["kurulabilir_guc_kwp_aralik"][0] != pytest.approx(r_gable["kurulabilir_guc_kwp_aralik"][0])
+
+
+def test_pvgis_links_are_the_exact_urls_of_the_calls(mocked, sample_index, building_point):
+    inputs = _roof_inputs(sample_index, building_point)
+    r, _, _ = app.evaluate(_roof_analysis(inputs), inputs, None, set(), _draw_state(inputs))
+    links = dict(report.pvgis_links(r))
+    assert len(links) == 2 + 4
+    face = next(url for label, url in links.items() if label.endswith("yüzü"))
+    assert "optimalangles=0" in face and "angle=30" in face and "usehorizon=1" in face and "outputformat=json" in face
+
+
+def _roof_call(calls):
+    return [c for c in calls if str(c.get("key", "")).startswith("roof_view")][-1]
+
+
+def test_roof_map_is_a_separate_drawing_only_map(mocked, map_calls, building_point):
+    calls, _ = map_calls
+    _after_hesapla(building_point)
+    roof = _roof_call(calls)
+    assert roof["key"] == "roof_view_0" and roof["returned_objects"] == ["all_drawings"]
+    main = [c for c in calls if c.get("key") == "map"][-1]
+    assert main["returned_objects"] == ["last_clicked"]
+
+
+def test_drawing_or_clicking_on_the_roof_map_never_changes_the_selected_building(mocked, map_calls, sample_index, building_point):
+    calls, box = map_calls
+    at = _after_hesapla(building_point)
+    flats = _widget(at.number_input, FLATS_LABEL).value
+    inputs = _roof_inputs(sample_index, building_point)
+    # the roof map returns a drawing AND (if it ever leaked) a click somewhere else
+    box["roof"] = {"all_drawings": [_feature(_centre_obstacle(inputs))], "last_clicked": {"lat": 41.0, "lng": 29.0}}
+    at.run()
+    assert not at.exception
+    assert at.session_state["selected_point"] == building_point and "analysis" in at.session_state
+    assert _widget(at.number_input, FLATS_LABEL).value == flats
+    r = at.session_state["result"]
+    assert r["guc_kaynagi"] == "geometri" and r["cizilen_engel_sayisi"] == 1
+    at.run()  # the same returned set again: no duplicate, no rerun loop
+    assert at.session_state["result"]["cizilen_engel_sayisi"] == 1
+    assert at.session_state[app.KEY_DRAWINGS]["gen"] == 0
+
+
+def test_undo_and_clear_buttons_update_the_drawings_and_rebuild_the_map(mocked, map_calls, sample_index, building_point):
+    calls, box = map_calls
+    at = _after_hesapla(building_point)
+    inputs = _roof_inputs(sample_index, building_point)
+    box["roof"] = {"all_drawings": [_feature(_centre_obstacle(inputs))]}
+    at.run()
+    assert at.session_state["result"]["guc_kaynagi"] == "geometri"
+    box["roof"] = {"all_drawings": None}  # a rebuilt map returns nothing yet
+    _button(at, "Son çizimi geri al").click().run()
+    assert not at.exception and at.session_state[app.KEY_DRAWINGS]["obstacles"] == []
+    assert _roof_call(calls)["key"] == "roof_view_1" and at.session_state["result"]["guc_kaynagi"] == "ortalama"
+    _button(at, "Engel yok, çatı boş").click().run()
+    assert at.session_state["result"]["guc_kaynagi"] == "geometri"
+    _button(at, "Engelleri temizle").click().run()
+    assert at.session_state["result"]["guc_kaynagi"] == "ortalama" and _roof_call(calls)["key"] == "roof_view_2"
+
+
+def test_drawings_reset_for_a_new_building(mocked, map_calls, sample_index, building_point):
+    calls, box = map_calls
+    at = _after_hesapla(building_point)
+    box["roof"] = {"all_drawings": [_feature(_centre_obstacle(_roof_inputs(sample_index, building_point)))]}
+    at.run()
+    assert at.session_state[app.KEY_DRAWINGS]["obstacles"]
+    second = _second_building_point(sample_index)
+    box["roof"] = {"all_drawings": None}
+    box["value"] = {"last_clicked": {"lat": second[0], "lng": second[1]}}
+    at.run()
+    assert at.session_state[app.KEY_DRAWINGS]["obstacles"] == []
+
+
+def test_pitched_subtype_selector_defaults_to_hip_and_shows_only_for_pitched_or_karma(mocked, building_point):
+    at = _run_with_point(building_point)
+    assert not [r for r in at.radio if r.label == PITCHED_LABEL]
+    _widget(at.radio, ROOF_LABEL).set_value("Karma (teras + eğimli)").run()
+    assert _widget(at.radio, PITCHED_LABEL).value == "Kırma (4 yüz)"
+    _widget(at.radio, PITCHED_LABEL).set_value("Beşik (2 yüz)").run()
+    _widget(at.radio, ROOF_LABEL).set_value("Bilmiyorum").run()  # hidden: the choice is kept for the extremes
+    _button(at, "Hesapla").click().run()
+    assert at.session_state["result"]["egimli_tip"] == "gable"
+
+
+def test_trust_features_render(mocked, building_point):
+    at = _after_hesapla(building_point)
+    assert "Hesap dökümü" in [e.label for e in at.expander]
+    assert any(c.value == report.PVGIS_CAPTION for c in at.caption)
+    assert any(c.value.startswith(app.ROOF_VIEW_CAPTION) and "Esri" in c.value for c in at.caption)
+    assert at.get("download_button")
+
+
+def test_small_fixes_help_list_bill_minimum_and_high_share_note(mocked, monkeypatch, building_point):
+    at = _after_hesapla(building_point)
+    help_md = [m.value for m in at.sidebar.markdown if m.value.startswith("1. ")]
+    assert help_md and help_md[0].count("\n") >= 3 and "\n2. " in help_md[0]
+    assert _widget(at.number_input, BILL_LABEL).min == 0
+    _widget(at.number_input, FLATS_LABEL).set_value(1).run()  # one flat gets the whole production
+    r = at.session_state["result"]
+    assert r["daire_payi_yuksek"] and r["daire_payi_kwh_ay_aralik"][1] > 240
+    note = building_mode.high_share_note(r)
+    assert note.startswith("Daire payı (≈") and note in [c.value for c in at.caption]
+    _widget(at.number_input, BILL_LABEL).set_value(1500.0).run()
+    assert not at.session_state["result"]["daire_payi_yuksek"]

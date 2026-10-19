@@ -291,6 +291,7 @@ def _building_dict(index, i, distance_m):
         "match_distance_m": distance_m,
         "centroid": (centroid[1], centroid[0]),  # (lat, lon)
         "ridge_azimuth_deg": ridge_azimuth_deg(poly),
+        "footprint_wkb_m": poly.wkb_hex,  # metric footprint (WKB hex: JSON-safe, hashable) for the roof view
     }
 
 

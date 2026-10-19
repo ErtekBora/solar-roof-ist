@@ -76,11 +76,15 @@ def usable_plan_area(roof_area_m2, obstacle_ratio, usable_base_area_m2=None):
 _LEVELS = ("Düşük", "Orta", "Yüksek")
 
 
-def building_confidence(image_view, has_polygon, roof_known, n_unavailable_faces=0, has_bill=False, flats_estimated=False):
+def building_confidence(
+    image_view, has_polygon, roof_known, n_unavailable_faces=0, has_bill=False, flats_estimated=False,
+    obstacles_marked=False,
+):
     """Building-mode confidence (SPEC section 6): returns (level, reasons, improvements).
 
     Base: Orta with a footprint or a top-down photo, else Düşük. An unknown roof structure and an unavailable
-    pitched face each drop one level (not below Düşük). A user-set Karma counts as known.
+    pitched face each drop one level (not below Düşük). A user-set Karma counts as known. Obstacles marked on the
+    roof view replace the photo/average reason but never raise the level (Yüksek needs neighbour shading, P2).
     """
     top_down = image_view == "top-down"
     level = 1 if (top_down or has_polygon) else 0
@@ -90,7 +94,9 @@ def building_confidence(image_view, has_polygon, roof_known, n_unavailable_faces
         if has_polygon
         else "Çatı alanı elle girildi; bina izi kullanılmadı."
     )
-    if top_down:
+    if obstacles_marked:
+        reasons.append("Engeller kullanıcı tarafından işaretlendi.")
+    elif top_down:
         reasons.append("Fotoğraf kuşbakışı çekilmiş; engel oranı güvenilir biçimde ölçülebildi.")
     elif image_view == "oblique":
         reasons.append("Fotoğraf yandan/eğik açıdan çekilmiş; engel alanı yaklaşık, güveni artırmıyor.")
@@ -108,7 +114,7 @@ def building_confidence(image_view, has_polygon, roof_known, n_unavailable_faces
         improve.append("Ortalama daire faturasını girin.")
     if not roof_known:
         improve.append("Çatı yapısını seçin.")
-    if not top_down:
+    if not top_down and not obstacles_marked:
         improve.append("Çatı fotoğrafı yükleyin.")
     reasons.append("Komşu bina gölgesi henüz hesaba katılmıyor; yalnızca arazi gölgesi hesaplandı.")
     return _LEVELS[max(level, 0)], reasons, improve

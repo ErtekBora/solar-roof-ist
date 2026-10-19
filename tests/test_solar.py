@@ -220,7 +220,7 @@ def test_clear_cache(http):
 
 
 def test_failed_run_is_not_cached(http):
-    http.queue.extend([FakeResponse(500), FakeResponse(200, OPTIMAL), FakeResponse(200, TERRAIN)])
+    http.queue.extend([FakeResponse(400), FakeResponse(200, OPTIMAL), FakeResponse(200, TERRAIN)])  # 4xx: no retry
     with pytest.raises(SolarDataError):
         solar.get_solar_yield(LAT, LON)
     assert solar.get_solar_yield(LAT, LON)["angle"] == 33
@@ -259,3 +259,86 @@ def test_face_yield_retries_429_then_fails_with_a_turkish_error(http, sleeps):
     with pytest.raises(SolarDataError):
         solar.get_face_yield(LAT, LON, 0)
     assert sleeps == [1, 2, 4] and len(http.calls) == 4
+
+
+# ------------------------------------------------- de-duplication, concurrency, retries on 5xx
+
+@pytest.fixture
+def slow_http(monkeypatch):
+    """Thread-safe requests.get mock: answers by `optimalangles`, sleeps briefly so calls really overlap."""
+    import threading
+    import time as _time
+
+    lock, calls = threading.Lock(), []
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        with lock:
+            calls.append(dict(params))
+        _time.sleep(0.05)
+        return FakeResponse(200, OPTIMAL if params["optimalangles"] == 1 else TERRAIN)
+
+    monkeypatch.setattr(solar.requests, "get", fake_get)
+    return calls
+
+
+def test_exactly_six_unique_calls_even_with_concurrent_duplicate_submissions(slow_http):
+    from concurrent.futures import ThreadPoolExecutor
+
+    hip = [0, 180, -90, 90]
+    gable = [0, 180]
+    noisy = [0.4, -179.6, 180.2, -90.3, 89.6]  # round to the same 1-degree aspects
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        runs = [pool.submit(solar.fetch_roof_yields, LAT, LON, aspects) for aspects in (hip, gable + hip, noisy)]
+        results = [f.result() for f in runs]
+    assert len(slow_http) == 6  # flat ideal + flat terrain + 4 face aspects
+    faces = [c for c in slow_http if c["optimalangles"] == 0 and c.get("angle") == 30]
+    assert sorted(c["aspect"] for c in faces) == [-90, 0, 90, 180]
+    assert set(results[0]["face_yields"]) == {-90, 0, 90, 180} == set(results[2]["face_yields"])
+
+
+def test_concurrent_identical_requests_fire_once(slow_http):
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(lambda _: solar.get_face_yield(LAT, LON, 45), range(8)))
+    assert len(slow_http) == 1
+
+
+@pytest.mark.parametrize("aspect, expected", [(0.4, 0), (-89.6, -90), (179.6, 180), (-179.6, 180), (-180, 180), (180, 180), (270, -90)])
+def test_aspect_is_rounded_and_normalised(aspect, expected):
+    assert solar.normalize_aspect(aspect) == expected
+
+
+def test_face_cache_key_uses_the_rounded_aspect(http):
+    http.queue.append(FakeResponse(200, TERRAIN))
+    solar.get_face_yield(LAT, LON, -90.3)
+    solar.get_face_yield(LAT, LON, -89.8)
+    assert len(http.calls) == 1 and http.calls[0]["params"]["aspect"] == -90
+
+
+def test_failed_face_is_none_and_failed_flat_raises(monkeypatch):
+    def face(lat, lon, aspect, angle=30, horizon72=None):
+        if aspect == 180:
+            raise SolarDataError("yok")
+        return {"e_y": 1.0}
+
+    monkeypatch.setattr(solar, "get_solar_yield", lambda lat, lon: {"angle": 33})
+    monkeypatch.setattr(solar, "get_face_yield", face)
+    out = solar.fetch_roof_yields(LAT, LON, [0, 180])
+    assert out["face_yields"] == {0: {"e_y": 1.0}, 180: None}
+    monkeypatch.setattr(solar, "get_solar_yield", lambda lat, lon: (_ for _ in ()).throw(SolarDataError("flat")))
+    with pytest.raises(SolarDataError):
+        solar.fetch_roof_yields(LAT, LON, [0])
+
+
+@pytest.mark.parametrize("status", [500, 502, 503, 504])
+def test_5xx_is_retried_with_the_backoff(http, sleeps, status):
+    http.queue.extend([FakeResponse(status), FakeResponse(200, OPTIMAL)])
+    assert solar.fetch_pvcalc(LAT, LON, optimal=True)["e_y"] == pytest.approx(1372.68)
+    assert len(http.calls) == 2 and sleeps == [1]
+
+
+def test_request_url_is_returned_with_the_result(http):
+    http.queue.append(FakeResponse(200, TERRAIN))
+    out = solar.get_face_yield(LAT, LON, 0)
+    assert out["request_url"] == solar.pvcalc_url(http.calls[0]["params"])

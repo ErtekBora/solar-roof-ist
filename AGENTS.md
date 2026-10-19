@@ -56,6 +56,9 @@ core/yolo_client.py       HTTP client for yolo_service (optional, fail-safe)
 core/fusion.py            merge Gemini + YOLO detections
 core/calc.py              usable area, tariff and bill functions, confidence
 core/building_mode.py     apartment-building mode: flat count, roof segments, equal sharing, payback
+core/layout.py            hip/gable roof faces, panel layout (vectorized grid search), capacity priority rule
+core/drawings.py          roof-view drawings: Draw GeoJSON parsing, labels, generations
+core/report.py            "Hesap dökümü", PVGIS verification links, downloadable report (no LLM)
 core/cost.py              installation cost bands (numbers from config only)
 core/metrics.py           shading heatmap (month x hour), monthly chart data, Istanbul comparison
 core/explain.py           grounded Turkish explanation + number check + template fallback
@@ -76,8 +79,9 @@ tests/                    pytest, one test file per module
 - **PVGIS calls:**
   - server-side only
   - cached with `st.cache_data` (or an in-module cache for non-UI code)
-  - retry on HTTP 429/529 up to 3 times with 1/2/4 s backoff
+  - retry on HTTP 429 and 5xx (500, 502, 503, 504, 529) up to 3 times with 1/2/4 s backoff
   - max 30 requests/second
+  - de-duplicate before submitting: build the set of unique requests first, then run them in parallel (max 4 workers); the module cache is guarded per key so the same request never fires twice
 - **Building data:**
   - the file is loaded lazily on first use (never at import time); a missing or unreadable file returns None and the UI falls back to the manual area
   - all footprints are projected once to EPSG:32635 at load time and indexed with a shapely STRtree; per click only the clicked point is projected
@@ -99,7 +103,7 @@ tests/                    pytest, one test file per module
   - `.streamlit/secrets.toml` must be in .gitignore.
 - **Privacy (KVKK):** uploaded images are processed in memory only and never written to disk. Store no personal data.
 - **Attribution:** always show "© OpenStreetMap katkıcıları · Bina verisi: Overture Maps Foundation (ODbL), Microsoft ML Buildings · Güneş verisi: PVGIS (JRC)". Demo images show their source and license.
-- **No Google Maps / Google Earth imagery** anywhere in the AI pipeline (Terms of Service). Satellite tiles on the map are for display only.
+- **No Google Maps / Google Earth imagery** anywhere in the AI pipeline (Terms of Service). Satellite tiles (Esri World Imagery) are DISPLAY ONLY: no image, tile or screenshot is ever sent to Gemini or any model, stored, or analysed; keep the Esri attribution visible.
 - **Numbers never come from an LLM.** Tariff, CO2 factor, installation cost bands and all results come from config or tools. Savings use the EPDK two-tier tariff in `core/calc.py`, valued PER FLAT after the production is split equally among the flats (bill-based when the user gives an average monthly flat bill, a wide fallback range otherwise).
 - **Language:** UI text in Turkish. Code, comments, docstrings and commit messages in English.
 - **Licensing:** Ultralytics (YOLOE) is AGPL-3.0, so the GitHub repo stays public. Keep a LICENSE file and credit all data sources in README.

@@ -483,3 +483,81 @@ def test_netting_note_only_with_a_bill_and_in_the_payload():
     assert explain.build_payload(analyze(bill_tl=1500.0))["mahsuplasma_varsayimi"] == bm.NETTING_NOTE
     assert "mahsuplasma_varsayimi" not in explain.build_payload(analyze())
     assert bm.NETTING_NOTE not in explain.build_fallback_explanation(analyze(bill_tl=1500.0))  # already on screen
+
+
+# ----------------------------------------------------------- hip roofs, weights, layout capacity
+
+def test_hip_face_specs_have_four_faces_with_quarter_weights():
+    specs = face_specs(0, "hip")
+    assert [s["name"] for s in specs] == ["Doğu", "Batı", "Kuzey", "Güney"]
+    assert [s["aspect"] for s in specs] == [-90, 90, 180, 0] and all(s["weight"] == 0.25 for s in specs)
+    assert all(s["weight"] == 0.5 for s in face_specs(0, "gable"))
+    with pytest.raises(ValueError):
+        face_specs(0, "mansard")
+
+
+def test_pitched_plan_area_is_split_by_face_weights():
+    faces = [{**s, "solar": pv(1300), "weight": w} for s, w in zip(face_specs(0, "hip"), [0.4, 0.4, 0.1, 0.1])]
+    seg = compute_segments(100.0, 0.0, flat_solar(1400), faces)
+    plans = [s["plan_m2"] for s in seg["segmentler"][1:]]
+    assert plans == pytest.approx([40, 40, 10, 10]) and sum(plans) == pytest.approx(100)
+
+
+def test_north_facing_hip_face_is_dropped_and_listed_as_unusable():
+    faces = [{**s, "solar": pv(800 if s["name"] == "Kuzey" else 1300)} for s in face_specs(0, "hip")]
+    seg = compute_segments(100.0, 0.0, flat_solar(1400), faces)
+    north = next(s for s in seg["segmentler"] if s["ad"] == "Kuzey yüzü")
+    assert north["durum"] == "elendi" and north["kwp"] == 0 and north["panel_sayisi"] == 0
+    assert bm.unusable_faces(flat_solar(1400), faces) == {"Kuzey yüzü"}
+
+
+def test_geometry_mode_kwp_is_panel_count_times_0_40():
+    faces = [{**s, "solar": pv(1300)} for s in face_specs(0, "gable")]
+    geometry = {"Doğu yüzü": {"plan_m2": 50.0, "panels": 20}, "Batı yüzü": {"plan_m2": 50.0, "panels": 17}}
+    seg = compute_segments(999.0, 0.0, flat_solar(1400), faces, geometry)
+    assert seg["kwp"] == pytest.approx(37 * config.PANEL_KWP) and seg["panel_sayisi"] == 37
+    assert seg["kullanilabilir_plan_m2"] == pytest.approx(100.0)  # the usable share is not used
+    assert seg["kwh"] == pytest.approx(37 * config.PANEL_KWP * 1300)
+
+
+def test_numeric_panel_count_is_the_floor_of_kwp_over_0_40():
+    seg = compute_segments(100.0, 1.0, flat_solar(1400), [])
+    assert seg["segmentler"][0]["panel_sayisi"] == math.floor(100 / 6.5 / 0.4)
+    assert bm.numeric_panel_count(0.79) == 1 and bm.numeric_panel_count(0.8) == 2 and bm.numeric_panel_count(0) == 0
+
+
+def test_unknown_with_geometry_gives_a_panel_range():
+    faces = [{**s, "solar": pv(1300)} for s in face_specs(0, "gable")]
+    geo = [
+        {"Düz teras": {"plan_m2": 200.0, "panels": 30}},
+        {"Doğu yüzü": {"plan_m2": 100.0, "panels": 40}, "Batı yüzü": {"plan_m2": 100.0, "panels": 40}},
+    ]
+    r = analyze(structure="unknown", faces=faces, geometry=geo, pitched_type="gable")
+    assert r["panel_sayisi_aralik"] == [30, 80] and r["kurulabilir_guc_kwp_aralik"] == pytest.approx([12.0, 32.0])
+    assert r["guc_kaynagi"] == "geometri" and r["kullanilabilir_oran"] is None
+
+
+def test_drawn_obstacles_replace_the_reason_but_never_raise_confidence_above_orta():
+    r = analyze(structure="pitched", obstacle_ratio=None, image_view=None, drawn={"count": 1, "area_m2": 2.0, "marked": True})
+    assert r["guven_seviyesi"] == "Orta" and "Engeller kullanıcı tarafından işaretlendi." in r["guven_nedenleri"]
+    assert not any("ortalama orana göre" in x for x in r["guven_nedenleri"])
+    assert "Çatı fotoğrafı yükleyin." not in r["guven_iyilestirme"]
+    assert r["cizilen_engel_sayisi"] == 1 and r["cizilen_engel_alani_m2"] == 2.0
+    plain = analyze(structure="pitched", obstacle_ratio=None, image_view=None)
+    assert plain["cizilen_engel_sayisi"] is None and plain["guc_kaynagi"] == "ortalama"
+
+
+def test_high_flat_share_flag_only_without_a_bill():
+    r = analyze(n_flats=1, bill_tl=None)
+    assert r["daire_payi_kwh_ay_aralik"][1] == pytest.approx(r["yillik_uretim_kwh_aralik"][1] / 12)
+    assert r["daire_payi_yuksek"] and bm.high_share_note(r).startswith("Daire payı (≈")
+    assert "Netleştirmek için ortalama daire faturasını girin." in bm.high_share_note(r)
+    assert not analyze(n_flats=1, bill_tl=1500.0)["daire_payi_yuksek"]
+    assert not analyze(n_flats=60)["daire_payi_yuksek"] and bm.high_share_note(analyze(n_flats=60)) is None
+
+
+def test_usable_ratio_in_the_result_matches_the_rule():
+    assert analyze(obstacle_ratio=None)["kullanilabilir_oran"] == pytest.approx(0.276 / 0.85)
+    assert analyze(obstacle_ratio=0.2)["kullanilabilir_oran"] == pytest.approx(0.8)
+    r = analyze(obstacle_ratio=0.0, capacity_source="engel_yok")
+    assert r["guc_kaynagi"] == "engel_yok" and r["kullanilabilir_alan_m2"] == pytest.approx(240.0)

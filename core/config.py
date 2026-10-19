@@ -20,6 +20,20 @@ LEVEL_HEIGHT_M = 3
 FALLBACK_HEIGHT_M = 15.0  # only for building files with no known height at all (e.g. a tiny fixture)
 SETBACK_M = 1.0  # assumption: edge strip left free around the footprint
 PVGIS_LOSS = 14
+PVGIS_MAX_WORKERS = 4  # unique PVcalc requests run in parallel on at most this many threads
+
+# Panel layout (SPEC section 5): panel size and power are assumptions shown in the UI
+PANEL_LENGTH_M = 1.72
+PANEL_WIDTH_M = 1.13
+PANEL_KWP = 0.40
+OBSTACLE_BUFFER_M = 0.5  # free strip around a user-drawn obstacle
+TERRACE_GAP_M = 0.3  # gap between terrace (flat) and pitched panels, split half/half on the terrace boundary
+WINTER_SOLSTICE_DECLINATION_DEG = 23.44
+
+# Roof view: satellite imagery is DISPLAY ONLY (never sent to a model, stored or analysed)
+ROOF_VIEW_ZOOM = 19
+ESRI_TILES_URL = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+ESRI_ATTRIBUTION = "Tiles © Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community"
 MAP_CENTER = (40.9720, 29.0760)  # Prototype coverage: Erenköy / Suadiye / Göztepe
 MAP_ZOOM = 15
 BUILDING_ZOOM = 18  # one-shot zoom right after a building is found

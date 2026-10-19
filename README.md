@@ -7,6 +7,12 @@ confidence, with an AI-written Turkish explanation. Built only from open data an
 
 > Status: **Day 0 skeleton.** The map runs; the core modules are stubs. See `SPEC.md` for the plan.
 
+## Screenshots
+
+<!-- TODO: add docs/roof_view.png — "Çatı görünümü": the selected building on Esri World Imagery (display only)
+     with the computed panel layout, a dropped north face and a user-drawn obstacle. -->
+_Screenshot placeholder: Çatı görünümü (panel yerleşimi ve çizilen engeller)._
+
 ## Run locally (Windows PowerShell)
 
 ```powershell
@@ -22,7 +28,7 @@ streamlit run app.py
 
 - Building data: © OpenStreetMap contributors and Microsoft ML Buildings, ODbL, via Overture Maps Foundation; building heights without a tag are an ML estimate (LightGBM trained on this data, no GlobalBuildingAtlas data)
 - Solar data: PVGIS v5.3, European Commission JRC
-- Satellite map tiles (display only): Esri World Imagery
+- Satellite map tiles (display only, never sent to a model, stored or analysed): Esri World Imagery — "Tiles © Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community"
 - Roof photo demo set: Roboflow rooftop1 (CC BY 4.0), RID / TUM (research use), Wikimedia Commons (CC licenses); each file is listed in `data/demo_images/SOURCES.md`
 - Irradiation layer: Global Solar Atlas (CC BY 4.0)
 - CO2 factor: ETKB TUESEF 2021; usable-area ratio: Ember; tariff: EPDK (AG tek terim mesken, 2026-04-04)
