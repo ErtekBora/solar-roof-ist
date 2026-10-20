@@ -16,7 +16,7 @@ from core.formatting import percent_from_ratio, round_half_up, tr_num
 WARNING_LINE = "⚠️ Kurulumdan önce çatının statik taşıma kapasitesini yetkili bir mühendise kontrol ettirin."
 
 # Result keys sent to the model, grouped by the rounding they get before sending (and before validation).
-_INT_KEYS = ("yillik_isinim_kwh_m2", "ideal_uretim_kwh_kwp", "golgeli_uretim_kwh_kwp", "panel_egim_derece", "panel_yon_derece")
+_INT_KEYS = ("yillik_isinim_kwh_m2", "ideal_uretim_kwh_kwp", "panel_egim_derece", "panel_yon_derece")
 _ONE_DECIMAL_KEYS = (
     "toplam_cati_alani_m2", "engel_alani_m2", "kullanilabilir_alan_m2", "golge_kaybi_yuzde", "uygunluk_puani_yuzde",
     "sicaklik_kaybi_yuzde",
@@ -26,6 +26,7 @@ _PASSTHROUGH_KEYS = ("goruntu_turu", "guven_seviyesi", "guven_nedenleri", "tasar
 _SAVINGS_INT_KEYS = ("fatura_tl_ay", "tuketim_kwh_ay")
 _TARIFF_KEYS = ("tarife_dusuk_tl_kwh", "tarife_yuksek_tl_kwh")
 _RELOCATABLE_LABELS = ("Su deposu", "Klima", "Uydu çanağı")
+FUTURE_FEATURES = ("komşu bina gölgesi",)  # the only planned feature the text may announce
 
 FINANCIAL_TERMS = (
     "amorti", "geri ödeme", "geri dönüş süresi", "maliyet", "yatırım", "teşvik", "kredi", "taksit",
@@ -69,6 +70,7 @@ Girdi, hesaplanmış sonuçları içeren bir JSON'dur. Yanıt KISA olsun: toplam
 4) Son satır AYNEN şu olsun: {WARNING_LINE}
 
 Kesin kurallar:
+- Kullanıcı yalnızca engelleri ve terası çizer; panelleri uygulama yerleştirir. Kullanıcının panel çizdiğini ASLA söyleme ("çizdiğiniz paneller" yazma).
 - Panel adedini yalnızca panel_sayisi değeriyle aktar; guc_kaynagi kurulabilir gücün nereden geldiğini söyler (kullanıcı çizimi, fotoğraf veya ortalama oran). cizilen_engel_sayisi varsa engellerin kullanıcı tarafından çizildiğini söyle. daire_payi_tipik_tuketimden_yuksek true ise daire payının (daire_payi_kwh_ay) tipik hane tüketiminin üstünde olabileceğini ve fazla üretimin değerlendirilemeyebileceğini belirt, ortalama daire faturasının girilmesini öner.
 - YALNIZCA girdideki sayıları kullan. Girdide olmayan panel adedi, süre veya tutar, teşvik, kredi koşulu veya girdide olmayan hiçbir yüzdeyi hesaplama ya da uydurma. Sayıları değiştirme, yeniden toplama veya bölme.
 - Şu sözcükleri hiç kullanma: {banned}, kazanç süresi. Parasal kazancı anlatırken "tasarruf" de.
@@ -86,8 +88,8 @@ Kesin kurallar:
 - Yalnızca su deposu, klima ve uydu çanağı başka yere taşınabilir. Çatı penceresi, baca, çatı katı / çatıdaki yapılar ve mevcut güneş panelleri için ASLA kaldırma veya taşıma önerme; bunlardan söz etme (tek istisna: engel_sayilari "Baca" içerdiğinde, adedini belirterek çevresindeki boşluğu kurulum firmasına kontrol ettirmeyi önerebilirsin).
 - Koşullu anlatım kullanma ("varsa", "olması durumunda", "-abiliyorsa" gibi). Öneriyi kesin cümleyle yaz.
 - Dilbilgisi açısından doğru Türkçe yaz. "Check" karşılığı emir kipi "kontrol edin" veya "bakın"dır ("kontrol et", "kontrol etmeyi deneyin" yazma).
-- "Özgül verim" derken HER ZAMAN golgeli_uretim_kwh_kwp değerini kullan (ideal_uretim_kwh_kwp değil).
-- Komşu bina gölgesi ve İstanbul ortalamasıyla karşılaştırma hakkında iddiada bulunma; bunlar "sonraki aşamada" eklenecek diyebilirsin.
+- "Özgül verim" derken HER ZAMAN ozgul_verim_kwh_kwp değerini kullan (bina geneli: yıllık üretim ÷ kurulabilir güç; ideal_uretim_kwh_kwp değil). ozgul_verim_kwh_kwp yoksa özgül verimden söz etme.
+- Gelecekteki özellikler hakkında yalnızca gelecek_ozellikler listesindekilerden söz edebilirsin (şu an: komşu bina gölgesi). Listede olmayan hiçbir sonraki aşama, eklenecek veya ileride yapılacak özellik vaadi yazma. İstanbul ortalamasıyla karşılaştırma hakkında iddiada bulunma.
 - demo_photo true ise, fotoğrafın örnek olduğunu ve kullanıcının kendi çatısı olmadığını BİR KEZ, ilk satırda hüküm cümlesinden sonra, noktayla ayrılmış AYRI bir cümle olarak söyle (noktalı virgülle bağlama).
 - Birimleri sembolle yaz: kWh/m², kWh/kWp, kWp, kWh, m², %. Birimleri yazıyla açma ("kilovatsaat", "metrekare", "yüzde" yazma).
 - Sayıları Türkçe biçimde yaz (1.739 ; 41,8). Büyük TL tutarları için "27,5 bin TL" biçimi de kabul edilir.
@@ -181,6 +183,10 @@ def _add_building_payload(payload, r):
     payload["kurulabilir_guc_kwp"] = _collapse(r["kurulabilir_guc_kwp_aralik"], 1)
     payload["yillik_uretim_kwh"] = _collapse(r["yillik_uretim_kwh_aralik"], 0)
     payload["co2_ton_yil"] = _collapse(r["co2_ton_yil_aralik"], 1)
+    yields = [v for v in r.get("ozgul_verim_bina_aralik") or [] if v is not None]
+    if yields:  # building-level kWh per installed kWp, so that kWp x yield = production in the text
+        payload["ozgul_verim_kwh_kwp"] = _collapse([min(yields), max(yields)], 0)
+    payload["gelecek_ozellikler"] = list(FUTURE_FEATURES)
     payload["kurulum_maliyeti_tl"] = _collapse(r["toplam_maliyet_tl_aralik"], 0)
     payload["daire_basi_maliyet_tl"] = _collapse(r["daire_basi_maliyet_tl_aralik"], 0)
     payload["daire_basi_tasarruf_tl_yil"] = _collapse(r["daire_basi_tasarruf_tl_aralik"], 0)
@@ -370,6 +376,31 @@ def find_field_names(text, payload):
     return sorted(leaked)
 
 
+_FUTURE_RE = re.compile(r"sonraki aşama|eklenecek|ileride")
+_SENTENCE_END_RE = re.compile(r"(?<=[.!?])\s+")  # a dot inside a number (17.678) is never followed by whitespace
+
+
+def drop_unlisted_future_sentences(text, allowed=FUTURE_FEATURES):
+    """Remove whole sentences that announce a future step without naming an allowed feature.
+
+    Returns (text, meaningful): meaningful is False when the first line (the verdict) was removed or nothing but the
+    fixed warning remains; the caller then falls back to the template. No replacement text is invented.
+    """
+    allowed = tuple(_tr_lower(a) for a in allowed)
+    lines, removed_first = [], False
+    for i, line in enumerate(text.splitlines()):
+        kept = [
+            sentence for sentence in _SENTENCE_END_RE.split(line.strip())
+            if not (_FUTURE_RE.search(_tr_lower(sentence)) and not any(a in _tr_lower(sentence) for a in allowed))
+        ]
+        if not kept and line.strip():
+            removed_first = removed_first or not lines
+            continue
+        lines.append(" ".join(kept) if kept else line)
+    body = [ln for ln in lines if ln.strip() and ln.strip() != WARNING_LINE]
+    return chr(10).join(lines), bool(body) and not removed_first
+
+
 # -------------------------------------------------------------------- template
 
 def _relocatable_phrase(payload):
@@ -387,10 +418,11 @@ def _fmt(value, decimals=0):
 def _building_fallback(p):
     """Concise template: verdict, one short paragraph, at most 3 tips; only payload numbers, no notes shown on screen."""
     unknown = p["cati_yapisi"] == "Bilmiyorum"
-    verdict = (
-        f"Bu konumda her kWp panel yılda yaklaşık {tr_num(p['golgeli_uretim_kwh_kwp'])} kWh üretir; "
-        f"çatıya yaklaşık {_fmt(p['kurulabilir_guc_kwp'], 1)} kWp sığabilir (güven: {p['guven_seviyesi']})."
-    )
+    fits = f"çatıya yaklaşık {_fmt(p['kurulabilir_guc_kwp'], 1)} kWp sığabilir (güven: {p['guven_seviyesi']})."
+    if p.get("ozgul_verim_kwh_kwp") is not None:
+        verdict = f"Bu sistemde her kWp panel yılda yaklaşık {_fmt(p['ozgul_verim_kwh_kwp'])} kWh üretir; {fits}"
+    else:
+        verdict = f"Bu konumda {fits}"
     if p["demo_photo"]:
         verdict += " Gösterilen fotoğraf örnektir, sizin çatınız değildir."
 
@@ -515,6 +547,9 @@ def explain_result(result, detection=None, api_key=None, demo_photo=False):
             ok, invalid = validate_explanation_numbers(text, payload) if text else (False, [])
             leaked = find_field_names(text, payload) if text else []
             if ok and not leaked:
+                text, meaningful = drop_unlisted_future_sentences(text)
+                if not meaningful:
+                    break
                 out = {"text": sanitize_tips(text), "source": "gemini", "retried": retried, "invalid_numbers": []}
                 _cache[key] = out
                 return dict(out)

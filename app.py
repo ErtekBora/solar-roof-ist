@@ -112,6 +112,8 @@ HELP_STEPS = (
     "4. İsteğe bağlı bilgileri girin ve Hesapla'ya basın.\n"
     "5. Çatı görünümünde engelleri çizerek sonucu netleştirin."
 )
+NOT_USED_LAYOUT = "kullanılmadı (panel yerleşimi)"
+NO_FLAT_SECTION = "kullanılmadı (düz bölüm yok)"
 DEMO_NONE = "Seçilmedi"
 PHOTO_STEP_TITLE = "Çatı fotoğrafı yükleyin (önerilir)"
 PHOTO_GUIDANCE = (
@@ -564,6 +566,12 @@ def format_range(values, decimals=0, unit=""):
     return f"{text} {unit}".strip()
 
 
+def building_yield_text(r):
+    """'1.402 – 1.460 kWh/kWp' (building yield = annual kWh / installed kWp), or None when no scenario has kWp."""
+    values = [v for v in r.get("ozgul_verim_bina_aralik") or [] if v is not None]
+    return format_range([min(values), max(values)], 0, "kWh/kWp") if values else None
+
+
 def payback_text(payback):
     """Turkish payback range; an uncomputable bound reads 'hesaplanamaz (tasarruf çok düşük)'. None if both are None."""
     lo, hi = payback
@@ -730,6 +738,7 @@ def assumption_rows(r, inputs, detection, explanation=None, report=None):
     """'Varsayımlar ve kaynaklar' table: one row per shown number (SPEC section 8)."""
     building = inputs.get("building")
     applied = detection is not None and inputs.get("photo_applies", True)
+    setback_area = r["kenar_sonrasi_alan_m2"] if r.get("kenar_sonrasi_alan_m2") is not None else r["toplam_cati_alani_m2"]
     if building is not None:
         rows = [
             ("Çatı alanı", f"{tr_num(building['area_m2'], 1)} m²", "Ölçüm/veri", f"Bina izi ({building['data_source']}, Overture Maps)"),
@@ -755,13 +764,16 @@ def assumption_rows(r, inputs, detection, explanation=None, report=None):
         "Panel", f"{tr_num(PANEL_LENGTH_M, 2)} × {tr_num(PANEL_WIDTH_M, 2)} m, {tr_num(PANEL_KWP, 2)} kWp", "Varsayım",
         f"Panel sayısı: {format_range(r['panel_sayisi_aralik'])}; yerleşim çatı görünümünde",
     ))
-    if r["guc_kaynagi"] == "geometri":
+    layout_mode = r["guc_kaynagi"] == "geometri"  # kWp comes from the panel layout (drawn obstacles or "Engel yok")
+    if layout_mode:
         rows.append((
             "Engeller", f"{r['cizilen_engel_sayisi']} çizim, {tr_num(r['cizilen_engel_alani_m2'], 1)} m²", "Kullanıcı girdisi",
             "Çatı görünümünde çizildi; kurulabilir güç = panel sayısı × 0,40 kWp, kullanılabilir alan oranı kullanılmadı",
         ))
     elif r["guc_kaynagi"] == "engel_yok":
         rows.append(("Engeller", "yok", "Kullanıcı girdisi", "Kullanıcı çatının boş olduğunu onayladı (engel oranı 0)"))
+    if layout_mode:
+        rows.append(("Kullanılabilir alan oranı", NOT_USED_LAYOUT, "Kullanıcı girdisi", "Kurulabilir güç panel yerleşiminden gelir"))
     if applied:
         view = "Kuşbakışı" if detection["image_view"] == "top-down" else "Açılı"
         rows += [
@@ -770,23 +782,45 @@ def assumption_rows(r, inputs, detection, explanation=None, report=None):
         ]
         if building is None:
             rows.append(("Kenar payı çarpanı", f"{EDGE_FACTOR}", "Varsayım", "Çatı kenarlarında panel konmayan şerit"))
+    elif layout_mode:
+        pass  # the unused-ratio row is added above
     elif building is None:
         rows.append(("Kullanılabilir alan oranı", f"{USABLE_RATIO_NO_PHOTO}", "Varsayım", "Ember ortalaması (fotoğraf yok)"))
     else:
         rows.append(("Kullanılabilir alan oranı", f"{tr_num(USABLE_RATIO_NO_PHOTO / EDGE_FACTOR, 3)}", "Varsayım", building_mode.USABLE_RATIO_NOTE))
     ridge = building["ridge_azimuth_deg"] if building is not None else DEFAULT_RIDGE_AZIMUTH_DEG
     rows += [
-        ("Kullanılabilir alan (plan)", f"{tr_num(r['kullanilabilir_alan_m2'], 1)} m²", "Varsayım", "Alan × oran; düz ve eğimli bölümlere bölünür"),
-        ("Düz bölüm gücü", f"{tr_num(M2_PER_KWP_FLAT, 1)} m²/kWp", "Varsayım", "Plan alanı ÷ 6,5 (sıra aralığı dahil); PVGIS'in en uygun eğim ve yönü"),
+        *(
+            [("Kenar boşluğu sonrası alan", f"{tr_num(setback_area, 1)} m²", "Ölçüm/veri", "Panel yerleşiminin yapıldığı alan")]
+            if layout_mode else []
+        ),
+        (
+            ("Kullanılabilir alan (plan)", NOT_USED_LAYOUT, "Varsayım", "Panel sayısı yerleşimden gelir")
+            if layout_mode else
+            ("Kullanılabilir alan (plan)", f"{tr_num(r['kullanilabilir_alan_m2'], 1)} m²", "Varsayım", "Alan × oran; düz ve eğimli bölümlere bölünür")
+        ),
+        (
+            ("Düz bölüm gücü", NOT_USED_LAYOUT, "Varsayım", "Panel sayısı yerleşimden gelir")
+            if layout_mode else
+            ("Düz bölüm gücü", f"{tr_num(M2_PER_KWP_FLAT, 1)} m²/kWp", "Varsayım", "Plan alanı ÷ 6,5 (sıra aralığı dahil); PVGIS'in en uygun eğim ve yönü")
+        ),
         ("Eğimli yüzler", f"{tr_num(M2_PER_KWP_PITCHED, 1)} m²/kWp", "Varsayım", f"Yüzey alanı (plan ÷ cos {DEFAULT_ROOF_PITCH_DEG}°) ÷ 5,5; eğim {DEFAULT_ROOF_PITCH_DEG}°, paneller çatıya paralel; eğimli alan yüzlere plan alanları oranında dağıtılır"),
         (
             "Mahya yönü", f"{tr_num(ridge, 0)}°", "Ölçüm/veri" if building is not None else "Varsayım",
             "Bina izinin uzun ekseni; yüzler mahyaya dik" if building is not None else "Bina izi yok: kuzey-güney mahya varsayıldı",
         ),
         ("Kurulabilir güç (bina)", format_range(r["kurulabilir_guc_kwp_aralik"], 1, "kWp"), "Varsayım", "Kullanılan çatı bölümlerinin toplamı"),
-        ("Düz bölüm eğimi / yönü", f"{r['panel_egim_derece']}° / {r['panel_yon_derece']}°", "Varsayım", "PVGIS'in en uygun eğim ve yönü"),
+        (
+            ("Düz bölüm eğimi / yönü", NO_FLAT_SECTION, "Varsayım", "Tamamen eğimli çatı")
+            if layout_mode and r["cati_yapisi"] == "pitched" else
+            ("Düz bölüm eğimi / yönü", f"{r['panel_egim_derece']}° / {r['panel_yon_derece']}°", "Varsayım", "PVGIS'in en uygun eğim ve yönü")
+        ),
         ("Yıllık ışınım", f"{tr_num(r['yillik_isinim_kwh_m2'])} kWh/m²", "Ölçüm/veri", "PVGIS (JRC)"),
-        ("Özgül verim (düz bölüm)", f"{tr_num(r['golgeli_uretim_kwh_kwp'])} kWh/kWp", "Ölçüm/veri", "PVGIS (JRC), arazi gölgesi dahil"),
+        ("Özgül verim (düz bölüm, referans)", f"{tr_num(r['golgeli_uretim_kwh_kwp'])} kWh/kWp", "Ölçüm/veri", "PVGIS (JRC), arazi gölgesi dahil; çatı yüzlerini elemek için referans"),
+        *(
+            [("Özgül verim (bina)", building_yield_text(r), "Ölçüm/veri", "Yıllık üretim ÷ kurulabilir güç")]
+            if building_yield_text(r) else []
+        ),
         ("Sıcaklık kaybı", f"%{tr_num(r['sicaklik_kaybi_yuzde'], 1)}", "Ölçüm/veri", "PVGIS (JRC)"),
         ("Uygunluk (arazi gölgesi)", f"%{tr_num(r['uygunluk_puani_yuzde'], 1)}", "Ölçüm/veri", "PVGIS gölgeli ÷ gölgesiz verim"),
         ("Yıllık üretim (bina)", format_range(r["yillik_uretim_kwh_aralik"], 0, "kWh"), "Ölçüm/veri", "Bölüm gücü × PVGIS özgül verimi"),
@@ -969,7 +1003,8 @@ def show_cards(r, inputs=None, applied=False, building=None):
 
     e1, e2, e3 = st.columns(3)
     e1.metric("Yıllık ışınım", f"{tr_num(r['yillik_isinim_kwh_m2'])} kWh/m²")
-    e2.metric("Özgül verim", f"{tr_num(r['golgeli_uretim_kwh_kwp'])} kWh/kWp")
+    if (yield_text := building_yield_text(r)) is not None:  # hidden without installed kWp
+        e2.metric("Özgül verim (bina)", yield_text)
     e3.metric("Sıcaklık kaybı", f"%{tr_num(r['sicaklik_kaybi_yuzde'], 1)}")
     if r["engel_orani"] is not None:
         e4, _, _ = st.columns(3)
@@ -1006,14 +1041,30 @@ def show_cards(r, inputs=None, applied=False, building=None):
                     st.write(f"**{title}:** " + "; ".join(items))
 
 
+def monthly_caption(r):
+    """Chart caption: flat section only if one is used, pitched wording, plan area only outside layout mode."""
+    segments = [seg for sc in r["senaryolar"] for seg in sc["segmentler"]]
+    flat_used = any(seg["tur"] == "flat" and seg["durum"] == "kullanildi" for seg in segments)
+    pitched = r["cati_yapisi"] != "flat"
+    pitch = f"eğimli yüzler {DEFAULT_ROOF_PITCH_DEG}° eğimle mahyaya dik yönlerde varsayıldı"
+    if flat_used and pitched:
+        text = f"Düz bölüm en uygun eğim ({r['panel_egim_derece']}°) ve yönde; {pitch}."
+    elif flat_used:
+        text = f"Düz bölüm en uygun eğim ({r['panel_egim_derece']}°) ve yönde."
+    elif pitched:
+        text = pitch[0].upper() + pitch[1:] + "."
+    else:
+        text = ""
+    if r["guc_kaynagi"] != "geometri":
+        text = f"{text} Kullanılabilir plan alanı: {tr_num(r['kullanilabilir_alan_m2'], 1)} m².".strip()
+    return text
+
+
 def show_monthly(r):
     st.subheader("Aylık üretim")
     monthly_chart(r)
     st.dataframe(segment_table(r), hide_index=True, width="stretch")
-    tilt = f"Düz bölüm en uygun eğim ({r['panel_egim_derece']}°) ve yönde"
-    if r["cati_yapisi"] != "flat":
-        tilt += f"; eğimli yüzler {DEFAULT_ROOF_PITCH_DEG}° eğimle mahyaya dik yönlerde varsayıldı"
-    st.caption(f"{tilt}. Kullanılabilir plan alanı: {tr_num(r['kullanilabilir_alan_m2'], 1)} m².")
+    st.caption(monthly_caption(r))
 
 
 EXPLANATION_CAPTIONS = {

@@ -319,11 +319,23 @@ def _span(values):
     return [min(values), max(values)]
 
 
+def building_specific_yield(kwh, kwp):
+    """Annual kWh per installed kWp of the whole system (display and explainer only); None without installed kWp."""
+    return kwh / kwp if _is_number(kwp) and kwp > 0 else None
+
+
+def _yield_bounds(scenarios):
+    """[lo, hi] of the scenarios' building yields; a bound without installed kWp is None (both None: no card)."""
+    values = [s["ozgul_verim_bina"] for s in scenarios if s["ozgul_verim_bina"] is not None]
+    return [min(values), max(values)] if values else [None, None]
+
+
 def _scenario(label, seg, n, bill):
     kwp_cost = cost.estimate_install_cost(seg["kwp"])
     share = allocate_equal_share(seg["aylik_kwh"], n, bill)
     return {
         "etiket": label, "duz_pay": seg["duz_pay"], "kwp": seg["kwp"], "kwh": seg["kwh"],
+        "ozgul_verim_bina": building_specific_yield(seg["kwh"], seg["kwp"]),
         "aylik_kwh": seg["aylik_kwh"], "segmentler": seg["segmentler"], "uyarilar": seg["uyarilar"],
         "alinamayan_yuz": seg["alinamayan_yuz"], "elenen_yuz": seg["elenen_yuz"],
         "panel_sayisi": seg["panel_sayisi"], "kullanilabilir_plan_m2": seg["kullanilabilir_plan_m2"],
@@ -420,7 +432,8 @@ def analyze_building(
         "dislanan_kalemler": list(cost.EXCLUSIONS_TR),
         "uyarilar": warnings,
         "ideal_uretim_kwh_kwp": ideal["e_y"],
-        "golgeli_uretim_kwh_kwp": shaded["e_y"],
+        "golgeli_uretim_kwh_kwp": shaded["e_y"],  # flat-section PVGIS yield: feeds the 80 % rule, not the building average
+        "ozgul_verim_bina_aralik": _yield_bounds(scenarios),
         "yillik_isinim_kwh_m2": shaded["h_i_y"],
         "sicaklik_kaybi_yuzde": abs(shaded["l_tg"]),
         "uygunluk_puani_yuzde": round(suitability, 2),

@@ -870,7 +870,7 @@ def test_cards_and_explanation_payload_round_identically():
     r = app.build_result(_bundle(), {**_inputs("unknown"), "bill": 1500.0}, obstacle_ratio=0.2715, image_view="top-down")
     r["yillik_isinim_kwh_m2"] = 1738.5  # a half: f-format would truncate it to 1.738
     payload = explain.build_payload(r, _square_detection(), False)
-    for key, decimals in (("yillik_isinim_kwh_m2", 0), ("golgeli_uretim_kwh_kwp", 0), ("sicaklik_kaybi_yuzde", 1),
+    for key, decimals in (("yillik_isinim_kwh_m2", 0), ("sicaklik_kaybi_yuzde", 1),
                           ("kullanilabilir_alan_m2", 1), ("uygunluk_puani_yuzde", 1)):
         assert tr_num(r[key], decimals) == tr_num(payload[key], decimals), key
     ranges = (
@@ -878,6 +878,7 @@ def test_cards_and_explanation_payload_round_identically():
         ("co2_ton_yil_aralik", "co2_ton_yil", 1), ("toplam_maliyet_tl_aralik", "kurulum_maliyeti_tl", 0),
         ("daire_basi_maliyet_tl_aralik", "daire_basi_maliyet_tl", 0), ("daire_basi_tasarruf_tl_aralik", "daire_basi_tasarruf_tl_yil", 0),
         ("fatura_karsilama_yuzde_aralik", "fatura_karsilama_yuzde_aralik", 0), ("kalan_fatura_tl_ay_aralik", "kalan_fatura_tl_ay", 0),
+        ("ozgul_verim_bina_aralik", "ozgul_verim_kwh_kwp", 0),
     )
     for result_key, payload_key, decimals in ranges:
         shown = app.format_range(r[result_key], decimals).replace(" ", "")

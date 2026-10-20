@@ -165,7 +165,7 @@ def test_real_sample_is_valid_and_a_wrong_number_is_caught():
 def test_payload_rounding():
     p = build_payload(make_result(), None, False)
     assert p["yillik_isinim_kwh_m2"] == 1739 and isinstance(p["yillik_isinim_kwh_m2"], int)
-    assert p["golgeli_uretim_kwh_kwp"] == 1370 and isinstance(p["yillik_uretim_kwh"], int)
+    assert p["ozgul_verim_kwh_kwp"] == 1370 and "golgeli_uretim_kwh_kwp" not in p and isinstance(p["yillik_uretim_kwh"], int)
     assert p["sicaklik_kaybi_yuzde"] == 6.5 and p["kurulabilir_guc_kwp"] == 14.3  # 150 x .85 x (1 - .2715) / 6.5
     assert p["daire_basi_tasarruf_tl_yil"] == [round_half_up(v, 0) for v in make_result()["daire_basi_tasarruf_tl_aralik"]]
     assert all(isinstance(v, int) for v in p["daire_basi_tasarruf_tl_yil"]) and isinstance(p["daire_sayisi"], int)
@@ -220,7 +220,7 @@ def test_prompt_contains_the_required_rules():
     assert "AYRI bir cümle" in prompt and "Değerlendirici sıfat kullanma" in prompt and "tasarruf" in prompt
     assert "Koşullu anlatım kullanma" in prompt and '"varsa"' in prompt
     assert "kontrol edin" in prompt and "bakın" in prompt and "Dilbilgisi" in prompt
-    assert "adetleriyle adlandırarak" in prompt and "golgeli_uretim_kwh_kwp" in prompt
+    assert "adetleriyle adlandırarak" in prompt and "ozgul_verim_kwh_kwp" in prompt
     assert WARNING_LINE in prompt
 
 
