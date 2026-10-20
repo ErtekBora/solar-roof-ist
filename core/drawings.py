@@ -15,10 +15,16 @@ Generations: the roof map's st_folium key is f"roof_view_{gen}". Leaflet only kn
 map was last built, so a shape missing from the returned set is a deletion ONLY if it was first seen in the
 current generation. None or [] on a fresh generation is "no information". Any real change to the stored shapes
 (deletion, terrace replacement, clear, undo) bumps `gen` so the map is rebuilt with only our stored shapes.
+
+Imagery alignment offset (display only): tall buildings look displaced on off-nadir imagery, so the user can shift
+the overlays by a metric (dx east, dy north) offset kept in `state["offset"]`. Stored shapes stay in the footprint
+frame; shapes returned by the map are in the displayed frame and are translated by -offset on the way in, the
+overlays by +offset on the way out. Changing the offset bumps `gen` (the map is rebuilt) but no stored shape changes.
 """
 from functools import lru_cache
 
 import shapely
+from shapely.affinity import translate
 from shapely.geometry import Polygon
 
 from core.layout import clean
@@ -27,6 +33,8 @@ OBSTACLE, TERRACE = "obstacle", "terrace"
 MATCH_AREA_M2 = 0.1
 MATCH_CENTROID_M = 0.1
 MIN_SHAPE_M2 = 0.05
+OFFSET_MAX_M = 20.0
+OFFSET_STEP_M = 1.0
 MSG_OUTSIDE = "Çizim bina sınırının dışında kaldığı için yok sayıldı."
 
 
@@ -48,18 +56,27 @@ def to_wgs84(xs, ys):
     return _transformers()[1].transform(xs, ys)
 
 
-def polygon_to_latlon(poly):
-    """Exterior rings of a metric (Multi)Polygon as [[[lat, lon], ...], ...] for folium."""
+def shift_metric(geom, offset):
+    """`geom` translated by offset (dx east, dy north) in metres; the same object when the offset is zero."""
+    if not offset or (offset[0] == 0 and offset[1] == 0):
+        return geom
+    return translate(geom, xoff=offset[0], yoff=offset[1])
+
+
+def polygon_to_latlon(poly, offset=(0.0, 0.0)):
+    """Exterior rings of a metric (Multi)Polygon as [[[lat, lon], ...], ...] for folium (shifted by `offset`)."""
     rings = []
-    for part in shapely.get_parts(poly):
+    for part in shapely.get_parts(shift_metric(poly, offset)):
         xs, ys = part.exterior.xy
         lons, lats = to_wgs84(list(xs), list(ys))
         rings.append([[float(la), float(lo)] for lo, la in zip(lons, lats)])
     return rings
 
 
-def feature_to_metric(feature):
-    """Metric Polygon of a GeoJSON Polygon feature, or None (other types, broken or tiny shapes)."""
+def feature_to_metric(feature, offset=(0.0, 0.0)):
+    """Metric Polygon of a GeoJSON Polygon feature, or None (other types, broken or tiny shapes).
+
+    The feature is in the displayed frame; the result is translated by -offset into the footprint frame."""
     try:
         geom = feature["geometry"]
         if geom["type"] != "Polygon":
@@ -67,7 +84,7 @@ def feature_to_metric(feature):
         ring = geom["coordinates"][0]
         lons, lats = zip(*[(float(p[0]), float(p[1])) for p in ring])
         xs, ys = to_metric(list(lons), list(lats))
-        poly = clean(Polygon(list(zip(xs, ys))))
+        poly = clean(Polygon([(x - offset[0], y - offset[1]) for x, y in zip(xs, ys)]))
     except (KeyError, IndexError, TypeError, ValueError):
         return None
     if poly is None or poly.area < MIN_SHAPE_M2:
@@ -84,6 +101,7 @@ def new_state(building_id):
     return {
         "building": building_id, "gen": 0, "next_id": 1, "obstacles": [], "terrace": None, "ignored": [],
         "empty_confirmed": False, "notice": None,
+        "offset": (0.0, 0.0),
     }
 
 
@@ -109,7 +127,8 @@ def sync(state, features, mode, footprint):
     """
     if features is None:
         return {"changed": False, "bump": False}
-    polys = [p for p in (feature_to_metric(f) for f in features) if p is not None]
+    offset = state.get("offset", (0.0, 0.0))
+    polys = [p for p in (feature_to_metric(f, offset) for f in features) if p is not None]
     gen = state["gen"]
     current = [s for s in stored_shapes(state) if s["gen"] == gen]
     matched, changed, bump = set(), False, False
@@ -143,6 +162,33 @@ def sync(state, features, mode, footprint):
     if bump:
         _bump(state)
     return {"changed": changed, "bump": bump}
+
+
+def move_offset(state, dx, dy):
+    """Shift the imagery alignment by (dx, dy) metres, clamped to +-OFFSET_MAX_M per axis. A real change rebuilds the
+    map (new `gen`) without touching any stored shape, so the re-rendered shapes are never new or deleted drawings."""
+    ox, oy = state.get("offset", (0.0, 0.0))
+    new = (max(-OFFSET_MAX_M, min(OFFSET_MAX_M, ox + dx)), max(-OFFSET_MAX_M, min(OFFSET_MAX_M, oy + dy)))
+    if new != (ox, oy):
+        state["offset"] = new
+        _bump(state)
+
+
+def reset_offset(state):
+    if state.get("offset", (0.0, 0.0)) != (0.0, 0.0):
+        state["offset"] = (0.0, 0.0)
+        _bump(state)
+
+
+def offset_text(offset):
+    """'Kaydırma: 3 m D, 5 m K' (D/B = east/west, K/G = north/south); 'Kaydırma: yok' at zero."""
+    dx, dy = offset
+    parts = []
+    if dx:
+        parts.append(f"{abs(dx):g} m {'D' if dx > 0 else 'B'}")
+    if dy:
+        parts.append(f"{abs(dy):g} m {'K' if dy > 0 else 'G'}")
+    return "Kaydırma: " + (", ".join(parts) if parts else "yok")
 
 
 def _remove(state, shape_id):

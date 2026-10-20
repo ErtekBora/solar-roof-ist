@@ -479,7 +479,7 @@ def test_unknown_structure_range_comes_from_scenarios_and_costs():
 
 def test_netting_note_only_with_a_bill_and_in_the_payload():
     assert analyze(bill_tl=1500.0)["mahsuplasma_notu"] == bm.NETTING_NOTE
-    assert bm.NETTING_NOTE.startswith("Aylık mahsuplaşma varsayımıyla hesaplanmıştır.")
+    assert bm.NETTING_ASSUMPTION not in bm.NETTING_NOTE and bm.NETTING_NOTE.startswith("Hesap aylık mahsuplaşma varsayar.")
     assert analyze()["mahsuplasma_notu"] is None
     assert explain.build_payload(analyze(bill_tl=1500.0))["mahsuplasma_varsayimi"] == bm.NETTING_ASSUMPTION
     assert "mahsuplasma_varsayimi" not in explain.build_payload(analyze())
@@ -562,3 +562,7 @@ def test_usable_ratio_in_the_result_matches_the_rule():
     assert analyze(obstacle_ratio=0.2)["kullanilabilir_oran"] == pytest.approx(0.8)
     r = analyze(obstacle_ratio=0.0, capacity_source="engel_yok")
     assert r["guc_kaynagi"] == "engel_yok" and r["kullanilabilir_alan_m2"] == pytest.approx(240.0)
+
+
+def test_netting_text_has_no_duplicate_sentence():
+    assert bm.NETTING_NOTE.count("mahsuplaşma varsay") == 1

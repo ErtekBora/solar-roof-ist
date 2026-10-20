@@ -75,8 +75,20 @@ def _segment_rows(sc, geometric, prefix):
     return rows
 
 
-def breakdown_rows(r):
-    """[{Adım, Hesap, Kaynak}] for the 'Hesap dökümü' table, one row per calculation step."""
+def alignment_row(offset):
+    """Display-only imagery alignment shift of the roof view; None at zero (or no offset)."""
+    if not offset or (offset[0] == 0 and offset[1] == 0):
+        return None
+    return _row(
+        "Görüntü hizalama kaydırması",
+        f"{tr_num(offset[0])} m doğu, {tr_num(offset[1])} m kuzey (yalnızca gösterim)", "kullanıcı ayarı",
+    )
+
+
+def breakdown_rows(r, offset=None):
+    """[{Adım, Hesap, Kaynak}] for the 'Hesap dökümü' table, one row per calculation step.
+
+    offset: the roof view's imagery alignment (dx east, dy north in m); it adds a display-only row, no result changes."""
     rows = []
     geometric = r.get("guc_kaynagi") == "geometri"
     if r.get("kenar_sonrasi_alan_m2") is not None:
@@ -153,6 +165,8 @@ def breakdown_rows(r):
         "Geri ödeme", f"daire başına maliyet {_span([cost_lo, cost_hi], 0, 'TL')} ÷ yıllık indirim "
         f"{_span(r['daire_basi_tasarruf_tl_aralik'], 0, 'TL')} = {pay_text}", f"{SOURCE_COST}, {SOURCE_EPDK}",
     ))
+    if (align := alignment_row(offset)) is not None:
+        rows.append(align)
     return rows
 
 
@@ -190,7 +204,7 @@ def _md_cell(text):
     return str(text).replace("|", "\\|").replace("\n", " ")
 
 
-def report_markdown(r, assumptions=()):
+def report_markdown(r, assumptions=(), offset=None):
     """One Markdown report built in memory: key cards, calculation breakdown, assumptions, links and legal note.
 
     assumptions: iterable of (name, value, status, source) rows (the 'Varsayımlar ve kaynaklar' table).
@@ -221,7 +235,7 @@ def report_markdown(r, assumptions=()):
         "| Adım | Hesap | Kaynak |",
         "|---|---|---|",
     ]
-    lines += [f"| {_md_cell(row['Adım'])} | {_md_cell(row['Hesap'])} | {_md_cell(row['Kaynak'])} |" for row in breakdown_rows(r)]
+    lines += [f"| {_md_cell(row['Adım'])} | {_md_cell(row['Hesap'])} | {_md_cell(row['Kaynak'])} |" for row in breakdown_rows(r, offset)]
     assumptions = list(assumptions)
     if assumptions:
         lines += ["", "## Varsayımlar ve kaynaklar", "", "| Değer | Sonuç | Durum | Kaynak / not |", "|---|---|---|---|"]

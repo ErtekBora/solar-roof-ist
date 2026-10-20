@@ -1407,3 +1407,73 @@ def test_roof_map_has_no_scroll_wheel_zoom_and_explains_the_trash_button(mocked,
     at = _after_hesapla(building_point)
     assert app.TRASH_NOTE in [c.value for c in at.caption]
     assert app.TRASH_NOTE.startswith("Haritadaki çöp kutusu yalnızca son yeniden çizimden sonraki şekilleri siler")
+
+
+# ------------------------------------------------------------ imagery alignment offset (display only)
+
+def test_offset_round_trip_maps_a_displayed_shape_back_to_the_footprint_frame(sample_index, building_point):
+    inputs = _roof_inputs(sample_index, building_point)
+    footprint = shapely.from_wkb(inputs["footprint_wkb_m"])
+    poly = _centre_obstacle(inputs)
+    state = drawings.new_state(inputs["building"]["id"])
+    drawings.move_offset(state, 3.0, -5.0)
+    displayed = _feature(shapely.affinity.translate(poly, 3.0, -5.0))  # what the shifted map returns
+    drawings.sync(state, [displayed], drawings.OBSTACLE, footprint)
+    stored = state["obstacles"][0]["raw"]
+    assert stored.centroid.distance(poly.centroid) < 0.01 and abs(stored.area - poly.area) < 0.01
+    # the overlay goes out by +offset: rendered back at the displayed position
+    ring = drawings.polygon_to_latlon(stored, state["offset"])[0]
+    xs, ys = drawings.to_metric([p[1] for p in ring], [p[0] for p in ring])
+    assert abs(sum(xs[:-1]) / (len(xs) - 1) - (poly.centroid.x + 3.0)) < 0.01
+
+
+def test_offset_is_clamped_and_described(sample_index, building_point):
+    state = drawings.new_state("b")
+    for _ in range(30):
+        drawings.move_offset(state, 1.0, 0.0)
+    drawings.move_offset(state, 0.0, 5.0)
+    assert state["offset"] == (20.0, 5.0) and drawings.offset_text(state["offset"]) == "Kaydırma: 20 m D, 5 m K"
+    drawings.reset_offset(state)
+    assert state["offset"] == (0.0, 0.0) and drawings.offset_text(state["offset"]) == "Kaydırma: yok"
+
+
+def test_offset_change_keeps_results_and_drawings_and_rebuilds_the_map(mocked, map_calls, sample_index, building_point):
+    calls, box = map_calls
+    at = _after_hesapla(building_point)
+    inputs = _roof_inputs(sample_index, building_point)
+    box["roof"] = {"all_drawings": [_feature(_centre_obstacle(inputs))]}
+    at.run()
+    before = at.session_state["result"]
+    ids = [s["id"] for s in at.session_state[app.KEY_DRAWINGS]["obstacles"]]
+    gen = at.session_state[app.KEY_DRAWINGS]["gen"]
+    box["roof"] = {"all_drawings": None}  # the rebuilt map returns nothing yet
+    _button(at, "→").click().run()
+    assert not at.exception
+    draw = at.session_state[app.KEY_DRAWINGS]
+    assert draw["offset"] == (1.0, 0.0) and draw["gen"] == gen + 1 and _roof_call(calls)["key"] == f"roof_view_{gen + 1}"
+    assert [s["id"] for s in draw["obstacles"]] == ids  # neither deleted nor re-added
+    after = at.session_state["result"]
+    assert after["kurulabilir_guc_kwp_aralik"] == before["kurulabilir_guc_kwp_aralik"]
+    assert after["panel_sayisi_aralik"] == before["panel_sayisi_aralik"]
+    # the map now returns the same shape in the displayed frame: still the same single obstacle
+    box["roof"] = {"all_drawings": [_feature(shapely.affinity.translate(_centre_obstacle(inputs), 1.0, 0.0))]}
+    at.run()
+    assert [s["id"] for s in at.session_state[app.KEY_DRAWINGS]["obstacles"]] == ids
+    assert at.session_state[app.KEY_DRAWINGS]["gen"] == gen + 1
+    assert any(c.value == app.ALIGN_CAPTION for c in at.caption)
+
+
+def test_offset_resets_for_a_new_building(sample_index, building_point):
+    state = {}
+    first = _roof_inputs(sample_index, building_point)["building"]
+    draw = app.drawing_state(state | {app.KEY_DRAWINGS: None}, first)
+    draw["offset"] = (4.0, 2.0)
+    other = {"id": "another"}
+    state2 = {app.KEY_DRAWINGS: draw}
+    assert app.drawing_state(state2, other)["offset"] == (0.0, 0.0)
+
+
+def test_report_mentions_a_non_zero_offset_only(sample_index):
+    assert report.alignment_row((0.0, 0.0)) is None and report.alignment_row(None) is None
+    row = report.alignment_row((3.0, -2.0))
+    assert row["Hesap"] == "3 m doğu, -2 m kuzey (yalnızca gösterim)"

@@ -168,3 +168,11 @@ def test_zero_capacity_has_one_warning_and_no_chart_label(pvgis_http, monkeypatc
     assert result["kurulabilir_guc_kwp_aralik"] == [0, 0] and not app.has_capacity(result)
     assert app.zero_capacity_warning(result) == app.ZERO_PITCHED_WARNING
     assert app.building_mode.chart_rows(result, app.MONTHS_TR) == []  # no "Düz teras" series
+
+
+def test_flat_roof_lists_only_the_flat_section(pvgis_http):
+    fp = footprint(-23.13)
+    analysis = hesapla(inputs_for(fp, "hip"))
+    result, _, _ = app.evaluate(analysis, {**inputs_for(fp, "hip"), "structure": "flat"}, None, set(), None)
+    lines = app.face_status_lines(result)
+    assert len(lines) == 1 and "Düz teras" in lines[0] and "yüzü" not in lines[0]

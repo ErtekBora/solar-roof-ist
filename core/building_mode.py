@@ -63,7 +63,6 @@ LEGAL_NOTE = (
 )
 NETTING_ASSUMPTION = "Aylık mahsuplaşma varsayımıyla hesaplanmıştır."
 NETTING_NOTE = (
-    f"{NETTING_ASSUMPTION} "
     "Hesap aylık mahsuplaşma varsayar. EPDK'nın 30 Nisan 2026 kararıyla lisanssız üretimde mahsuplaşma saatlik "
     "bazda yapılıyor; mesken ve apartman ortak alan uygulamasının ayrıntıları dağıtım şirketiyle netleşmelidir. "
     "Saatlik mahsuplaşmada gündüz tüketimi düşük olan sistemlerde tasarruf daha düşük çıkabilir."

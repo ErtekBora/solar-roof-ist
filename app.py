@@ -67,6 +67,10 @@ PITCHED_CHOICES = list(building_mode.PITCHED_TYPE_LABELS_TR.values())
 PITCHED_FROM_CHOICE = {label: key for key, label in building_mode.PITCHED_TYPE_LABELS_TR.items()}
 HIP_CHOICE = building_mode.PITCHED_TYPE_LABELS_TR["hip"]
 DRAW_OBSTACLE, DRAW_TERRACE = "Engel çiz", "Teras çiz"
+ALIGN_CAPTION = (
+    "Yüksek binalarda uydu görüntüsü çatıyı yana kaymış gösterir. Beyaz çerçeveyi görüntüdeki çatının üstüne getirin, "
+    "engelleri sonra çizin. Hesap yine bina izi (OpenStreetMap) üzerinden yapılır."
+)
 ROOF_VIEW_CAPTION = (
     "Uydu görüntüsü yalnızca gösterim içindir; tarihi farklı olabilir ve bina sınırıyla birkaç metre kayabilir."
 )
@@ -881,6 +885,8 @@ def face_status_lines(r):
         for seg in sc["segmentler"]:
             if seg["tur"] == "flat" and seg["durum"] == "kullanilmadi":
                 continue  # no terrace share in this scenario: not a face
+            if seg["tur"] == "face" and r["cati_yapisi"] == "flat":
+                continue  # a fully flat roof has no pitched faces to report
             prefix = f"{sc['etiket']} · " if multi else ""
             detail = f" ({tr_num(seg['kwp'], 1)} kWp)" if seg["durum"] == "kullanildi" else ""
             if seg["durum"] == "elendi" and seg.get("verim_orani") is not None:
@@ -1188,8 +1194,9 @@ def build_roof_map(center):
     return m
 
 
-def _metric_ring_latlon(coords):
+def _metric_ring_latlon(coords, offset=(0.0, 0.0)):
     xs, ys = zip(*coords)
+    xs, ys = [x + offset[0] for x in xs], [y + offset[1] for y in ys]
     lons, lats = drawings.to_wgs84(list(xs), list(ys))
     return [[float(la), float(lo)] for lo, la in zip(lons, lats)]
 
@@ -1222,32 +1229,33 @@ def drawn_panel_count(roof):
 def build_roof_overlay(roof, draw, result):
     """Dynamic layers of the roof map: footprint, setback, panels, dropped faces, user shapes and the label."""
     fg = folium.FeatureGroup(name="Çatı")
-    for ring in drawings.polygon_to_latlon(roof["footprint"]):
+    off = draw.get("offset", (0.0, 0.0))  # display-only imagery alignment: every overlay moves, the data does not
+    for ring in drawings.polygon_to_latlon(roof["footprint"], off):
         folium.Polygon(ring, color="#ffffff", weight=2, fill=False, interactive=False).add_to(fg)
     if roof["model"]["setback"] is not None:
-        for ring in drawings.polygon_to_latlon(roof["model"]["setback"]):
+        for ring in drawings.polygon_to_latlon(roof["model"]["setback"], off):
             folium.Polygon(ring, color="#ffffff", weight=1, dash_array="5", fill=False, interactive=False).add_to(fg)
     for face in roof["model"]["faces"]:
         if layout.face_segment_name(face["name"]) in roof["skip"] and face["polygon"] is not None:
-            for ring in drawings.polygon_to_latlon(face["polygon"]):
+            for ring in drawings.polygon_to_latlon(face["polygon"], off):
                 folium.Polygon(
                     ring, color="#6b7280", weight=1, fill=True, fill_color="#6b7280", fill_opacity=0.35,
                     tooltip=DROPPED_FACE_TOOLTIP,
                 ).add_to(fg)
             for line in layout.hatch_lines(face["polygon"]):
-                folium.PolyLine(_metric_ring_latlon(line.coords), color="#374151", weight=1, interactive=False).add_to(fg)
+                folium.PolyLine(_metric_ring_latlon(line.coords, off), color="#374151", weight=1, interactive=False).add_to(fg)
     for panels in drawn_panels(roof).values():
         for corners in panels:
             folium.Polygon(
-                _metric_ring_latlon(corners), color="#1d4ed8", weight=1, fill=True, fill_color="#3b82f6",
+                _metric_ring_latlon(corners, off), color="#1d4ed8", weight=1, fill=True, fill_color="#3b82f6",
                 fill_opacity=0.75, interactive=False,
             ).add_to(fg)
     for shape in drawings.stored_shapes(draw):
         color = "#16a34a" if shape["kind"] == drawings.TERRACE else "#dc2626"
-        for ring in drawings.polygon_to_latlon(shape["geom"]):
+        for ring in drawings.polygon_to_latlon(shape["geom"], off):
             folium.Polygon(ring, color=color, weight=2, fill=True, fill_color=color, fill_opacity=0.3, interactive=False).add_to(fg)
     bounds = roof["footprint"].bounds
-    lon, lat = drawings.to_wgs84((bounds[0] + bounds[2]) / 2, bounds[3])
+    lon, lat = drawings.to_wgs84((bounds[0] + bounds[2]) / 2 + off[0], bounds[3] + off[1])
     folium.Marker(
         [lat, lon],
         icon=folium.DivIcon(
@@ -1273,6 +1281,37 @@ def _undo_drawing():
     drawings.undo_last(st.session_state[KEY_DRAWINGS])
 
 
+def _move_offset(dx, dy):
+    drawings.move_offset(st.session_state[KEY_DRAWINGS], dx, dy)
+
+
+def _reset_offset():
+    drawings.reset_offset(st.session_state[KEY_DRAWINGS])
+
+
+def roof_map_center(roof, draw, building):
+    """Map centre: the building centroid moved by the alignment offset (metric shift, then back to lat/lon)."""
+    off = draw.get("offset", (0.0, 0.0))
+    if off == (0.0, 0.0):
+        return list(building["centroid"])
+    lat, lon = building["centroid"]
+    x, y = drawings.to_metric(lon, lat)
+    lon2, lat2 = drawings.to_wgs84(x + off[0], y + off[1])
+    return [float(lat2), float(lon2)]
+
+
+def alignment_control(draw):
+    """'Çerçeveyi çatıya hizala': arrow buttons (1 m per click), reset and the current offset. Display only."""
+    step = drawings.OFFSET_STEP_M
+    st.markdown("**Çerçeveyi çatıya hizala**")
+    cols = st.columns([1, 1, 1, 1, 1, 3])
+    for col, label, delta in zip(cols, ("↑", "↓", "←", "→"), ((0, step), (0, -step), (-step, 0), (step, 0))):
+        col.button(label, key=f"align_{label}", on_click=_move_offset, args=delta)
+    cols[4].button("Sıfırla", key="align_reset", on_click=_reset_offset)
+    cols[5].markdown(drawings.offset_text(draw["offset"]))
+    st.caption(ALIGN_CAPTION)
+
+
 def roof_view_section(state, roof, result, building):
     """'Çatı görünümü': the second map (isolated from the building selection) and the drawing tools.
 
@@ -1293,10 +1332,11 @@ def roof_view_section(state, roof, result, building):
         "Haritanın solundaki araçlarla dikdörtgen veya çokgen çizin. Engeller kırmızı, teras yeşil gösterilir. "
         "Çizimleri silmek için 'Engelleri temizle' veya 'Son çizimi geri al' düğmelerini kullanın."
     )
+    alignment_control(draw)
     for note in roof["notes"]:
         st.info(note)
     data = st_folium(
-        build_roof_map(list(building["centroid"])), key=drawings.map_key(draw), returned_objects=["all_drawings"],
+        build_roof_map(roof_map_center(roof, draw, building)), key=drawings.map_key(draw), returned_objects=["all_drawings"],
         feature_group_to_add=build_roof_overlay(roof, draw, result), height=520, use_container_width=True,
     )
     mode = drawings.TERRACE if mode_label == DRAW_TERRACE else drawings.OBSTACLE
@@ -1311,20 +1351,20 @@ def roof_view_section(state, roof, result, building):
     st.caption(report.IMAGERY_NOTE)
 
 
-def breakdown_section(result):
+def breakdown_section(result, offset=None):
     """'Hesap dökümü' and the PVGIS verification links (all from the result dict, no LLM)."""
     with st.expander("Hesap dökümü"):
-        st.dataframe(pd.DataFrame(report.breakdown_rows(result)), hide_index=True, width="stretch")
+        st.dataframe(pd.DataFrame(report.breakdown_rows(result, offset)), hide_index=True, width="stretch")
         st.markdown("**PVGIS'te kendiniz doğrulayın**")
         st.caption(report.PVGIS_CAPTION)
         for label, url in report.pvgis_links(result):
             st.link_button(f"PVGIS'te kendiniz doğrulayın — {label}", url)
 
 
-def download_section(result, assumptions):
+def download_section(result, assumptions, offset=None):
     """'Raporu indir': one Markdown file built in memory (no disk writes)."""
     st.download_button(
-        "Raporu indir", data=report.report_markdown(result, assumptions).encode("utf-8"),
+        "Raporu indir", data=report.report_markdown(result, assumptions, offset).encode("utf-8"),
         file_name="cati_ges_raporu.md", mime="text/markdown",
     )
 
@@ -1480,11 +1520,12 @@ def main():
             st.caption("Çatı görünümü yalnızca haritadan seçilen binalar için gösterilir (bina izi gerekir).")
         explanation_section(analysis, result, eff_detection)
         show_monthly(result)
-        breakdown_section(result)
+        offset = draw.get("offset") if roof is not None else None
+        breakdown_section(result, offset)
         st.subheader("Varsayımlar ve kaynaklar")
         assumptions = assumption_rows(result, inputs, detection, state.get("explanation"), index.report if index else None)
         st.dataframe(assumptions, hide_index=True, width="stretch")
-        download_section(result, assumptions.itertuples(index=False, name=None))
+        download_section(result, assumptions.itertuples(index=False, name=None), offset)
 
 
 
