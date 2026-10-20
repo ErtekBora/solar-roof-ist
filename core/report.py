@@ -230,7 +230,10 @@ def report_markdown(r, assumptions=()):
     if links:
         lines += ["", f"## PVGIS'te kendiniz doğrulayın ({PVGIS_CAPTION})", ""]
         lines += [f"- {label}: <{url}>" for label, url in links]
-    lines += ["", "## Notlar", "", f"- {LEGAL_NOTE}", f"- {IMAGERY_NOTE}", ""]
+    lines += ["", "## Notlar", ""]
+    if r.get("mahsuplasma_notu"):
+        lines.append(f"- {r['mahsuplasma_notu']}")
+    lines += [f"- {LEGAL_NOTE}", f"- {IMAGERY_NOTE}", ""]
     if r.get("guven_nedenleri"):
         lines += ["## Güven seviyesinin nedenleri", ""] + [f"- {x}" for x in r["guven_nedenleri"]] + [""]
     return "\n".join(lines)

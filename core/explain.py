@@ -169,7 +169,9 @@ _SEGMENT_STATUS_TR = {
 
 def _add_building_payload(payload, r):
     """Building-mode fields: structure, flats, ranges, cost, sharing, payback, assumption, segments, panel layout."""
-    from core.building_mode import CAPACITY_SOURCE_LABELS_TR, PITCHED_TYPE_LABELS_TR, STRUCTURE_LABELS_TR
+    from core.building_mode import (
+        CAPACITY_SOURCE_LABELS_TR, NETTING_ASSUMPTION, PITCHED_TYPE_LABELS_TR, STRUCTURE_LABELS_TR,
+    )
 
     payload["cati_yapisi"] = STRUCTURE_LABELS_TR[r["cati_yapisi"]]
     if r.get("duz_pay_yuzde") is not None:
@@ -193,7 +195,7 @@ def _add_building_payload(payload, r):
         payload["fatura_karsilama_yuzde_aralik"] = _collapse(r["fatura_karsilama_yuzde_aralik"], 0)
         payload["kalan_fatura_tl_ay"] = _collapse(r["kalan_fatura_tl_ay_aralik"], 0)
         payload["tuketim_varsayimi"] = r["tuketim_varsayimi"]
-        payload["mahsuplasma_varsayimi"] = r["mahsuplasma_notu"]
+        payload["mahsuplasma_varsayimi"] = NETTING_ASSUMPTION
     payload["uyarilar"] = list(r.get("uyarilar") or [])
     if r.get("panel_sayisi_aralik") is not None:
         payload["panel_sayisi"] = _collapse(r["panel_sayisi_aralik"], 0)

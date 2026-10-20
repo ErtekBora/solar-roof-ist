@@ -187,7 +187,7 @@ def test_payload_with_bill_carries_coverage_and_self_use():
     assert p["tasarruf_yontemi"] == "fatura" and p["fatura_tl_ay"] == 1500
     assert 0 < p["fatura_karsilama_yuzde_aralik"] <= 100 and "kendi_kullanim_orani_yuzde" not in p
     assert p["tuketim_kwh_ay"] == 353
-    assert p["mahsuplasma_varsayimi"] == "Aylık mahsuplaşma varsayımıyla hesaplanmıştır."
+    assert p["mahsuplasma_varsayimi"] == "Aylık mahsuplaşma varsayımıyla hesaplanmıştır."  # explainer gets only the short assumption
     text = f"Daire başına faturanın yaklaşık %{p['fatura_karsilama_yuzde_aralik']} kadarı karşılanır."
     assert validate_explanation_numbers(text, p) == (True, [])
 

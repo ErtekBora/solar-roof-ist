@@ -150,3 +150,8 @@ def test_report_contains_the_main_numbers_and_notes():
     ):
         assert text in md, text
     assert isinstance(md, str) and md.count("| Kenar boşluğu | 1,0 m |") == 1
+
+
+def test_report_notes_carry_the_hourly_netting_and_same_person_caveats():
+    md = report.report_markdown(_result(bill=2000.0), [])
+    assert "saatlik" in md and "aynı kişiye ait" in md

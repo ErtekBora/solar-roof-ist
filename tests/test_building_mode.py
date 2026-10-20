@@ -478,9 +478,10 @@ def test_unknown_structure_range_comes_from_scenarios_and_costs():
 
 
 def test_netting_note_only_with_a_bill_and_in_the_payload():
-    assert analyze(bill_tl=1500.0)["mahsuplasma_notu"] == "Aylık mahsuplaşma varsayımıyla hesaplanmıştır."
+    assert analyze(bill_tl=1500.0)["mahsuplasma_notu"] == bm.NETTING_NOTE
+    assert bm.NETTING_NOTE.startswith("Aylık mahsuplaşma varsayımıyla hesaplanmıştır.")
     assert analyze()["mahsuplasma_notu"] is None
-    assert explain.build_payload(analyze(bill_tl=1500.0))["mahsuplasma_varsayimi"] == bm.NETTING_NOTE
+    assert explain.build_payload(analyze(bill_tl=1500.0))["mahsuplasma_varsayimi"] == bm.NETTING_ASSUMPTION
     assert "mahsuplasma_varsayimi" not in explain.build_payload(analyze())
     assert bm.NETTING_NOTE not in explain.build_fallback_explanation(analyze(bill_tl=1500.0))  # already on screen
 

@@ -56,9 +56,22 @@ ASSUMPTION_CONSTANT_CONSUMPTION = (
 LEGAL_NOTE = (
     "Üretimin dairelere eşit paylaştırılması mevzuata, kat malikleri kararına ve dağıtım şirketinin onayına tabidir. "
     "En yaygın uygulama sistemin ortak alan sayacına bağlanmasıdır; bu durumda ortak alan tüketimini aşan üretim "
-    "değerlendirilemeyebilir ve geri ödeme uzar."
+    "değerlendirilemeyebilir ve geri ödeme uzar. "
+    "Mevzuat üretim ve tüketim tesisinin aynı kişiye ait olmasını şart koşar; bu nedenle üretim dairelerin bireysel "
+    "faturalarından doğrudan düşülemez, sistem ortak alan aboneliğine bağlanır ve tasarrufun aidattan eşit düşülmesi "
+    "önerilir."
 )
-NETTING_NOTE = "Aylık mahsuplaşma varsayımıyla hesaplanmıştır."
+NETTING_ASSUMPTION = "Aylık mahsuplaşma varsayımıyla hesaplanmıştır."
+NETTING_NOTE = (
+    f"{NETTING_ASSUMPTION} "
+    "Hesap aylık mahsuplaşma varsayar. EPDK'nın 30 Nisan 2026 kararıyla lisanssız üretimde mahsuplaşma saatlik "
+    "bazda yapılıyor; mesken ve apartman ortak alan uygulamasının ayrıntıları dağıtım şirketiyle netleşmelidir. "
+    "Saatlik mahsuplaşmada gündüz tüketimi düşük olan sistemlerde tasarruf daha düşük çıkabilir."
+)
+USABLE_RATIO_NOTE = (
+    "Ember brüt kullanılabilir oranı %27,6 ÷ 0,85 (kenar boşluğu sonrası) = %32,5; küçük binalarda kenar kaybı "
+    "oransal olarak büyük olduğundan sonuç ihtiyatlıdır."
+)
 SEASONAL_NOTE = "Yıllık ortalamadır; kışın daha az, yazın daha fazla indirim olur ve indirim faturayı aşamaz."
 PHYSICAL_SHARING_NOTE = (
     "Fiziksel paylaşımda (her daireye eşit kWh) tüketimi yüksek daireler kademe farkı nedeniyle biraz daha fazla "
