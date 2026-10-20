@@ -20,6 +20,9 @@ Imagery alignment offset (display only): tall buildings look displaced on off-na
 the overlays by a metric (dx east, dy north) offset kept in `state["offset"]`. Stored shapes stay in the footprint
 frame; shapes returned by the map are in the displayed frame and are translated by -offset on the way in, the
 overlays by +offset on the way out. Changing the offset bumps `gen` (the map is rebuilt) but no stored shape changes.
+
+Click-to-align: while `state["align_active"]` the roof map has no Draw toolbar and also returns `last_clicked`; the
+next click sets the offset (see apply_click) and turns the mode off. The last handled click is kept in `last_click`.
 """
 from functools import lru_cache
 
@@ -33,8 +36,9 @@ OBSTACLE, TERRACE = "obstacle", "terrace"
 MATCH_AREA_M2 = 0.1
 MATCH_CENTROID_M = 0.1
 MIN_SHAPE_M2 = 0.05
-OFFSET_MAX_M = 20.0
+OFFSET_MAX_M = 30.0
 OFFSET_STEP_M = 1.0
+OFFSET_STEP_BIG_M = 5.0
 MSG_OUTSIDE = "Çizim bina sınırının dışında kaldığı için yok sayıldı."
 
 
@@ -101,7 +105,7 @@ def new_state(building_id):
     return {
         "building": building_id, "gen": 0, "next_id": 1, "obstacles": [], "terrace": None, "ignored": [],
         "empty_confirmed": False, "notice": None,
-        "offset": (0.0, 0.0),
+        "offset": (0.0, 0.0), "align_active": False, "last_click": None,
     }
 
 
@@ -168,10 +172,50 @@ def move_offset(state, dx, dy):
     """Shift the imagery alignment by (dx, dy) metres, clamped to +-OFFSET_MAX_M per axis. A real change rebuilds the
     map (new `gen`) without touching any stored shape, so the re-rendered shapes are never new or deleted drawings."""
     ox, oy = state.get("offset", (0.0, 0.0))
-    new = (max(-OFFSET_MAX_M, min(OFFSET_MAX_M, ox + dx)), max(-OFFSET_MAX_M, min(OFFSET_MAX_M, oy + dy)))
+    new = (_clamp_offset(ox + dx), _clamp_offset(oy + dy))
     if new != (ox, oy):
         state["offset"] = new
         _bump(state)
+
+
+def _clamp_offset(value):
+    return max(-OFFSET_MAX_M, min(OFFSET_MAX_M, value))
+
+
+def start_align(state):
+    """Enter click-to-align mode. The map is rebuilt (new `gen`) without the Draw toolbar."""
+    if not state.get("align_active"):
+        state["align_active"] = True
+        _bump(state)
+
+
+def cancel_align(state):
+    """Leave click-to-align mode without changing the offset; the map is rebuilt with the Draw toolbar."""
+    if state.get("align_active"):
+        state["align_active"] = False
+        _bump(state)
+
+
+def apply_click(state, click, footprint):
+    """Click-to-align: offset = clicked point - footprint centroid (EPSG:32635), rounded to 1 m, clamped per axis.
+
+    `click` is st_folium's last_clicked ({"lat", "lng"}). Does nothing unless the mode is active, when the click is
+    missing/malformed, or when it repeats the last handled click. A handled click turns the mode off and rebuilds the
+    map (new `gen`). Never touches the stored shapes. Returns True when the offset was set."""
+    if not state.get("align_active") or footprint is None or not isinstance(click, dict):
+        return False
+    try:
+        lat, lng = float(click["lat"]), float(click["lng"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    if state.get("last_click") == (lat, lng):
+        return False
+    x, y = to_metric(lng, lat)
+    centroid = footprint.centroid
+    state["offset"] = (_clamp_offset(float(round(x - centroid.x))), _clamp_offset(float(round(y - centroid.y))))
+    state["last_click"], state["align_active"] = (lat, lng), False
+    _bump(state)
+    return True
 
 
 def reset_offset(state):

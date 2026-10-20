@@ -289,17 +289,21 @@ def map_calls(monkeypatch):
     return calls, box
 
 
+def _main_call(calls):
+    return [c for c in calls if c.get("key") == "map"][-1]
+
+
 def test_center_and_zoom_are_passed_only_on_the_rerun_after_a_building_is_found(mocked, map_calls, building_point):
     calls, _ = map_calls
     at = _run_with_point(building_point, skip=False)
-    first = calls[-1]
+    first = _main_call(calls)
     assert first["zoom"] == 18 and first["center"] is not None
     assert first["returned_objects"] == ["last_clicked"] and first["key"] == "map"
     assert isinstance(first["feature_group_to_add"], folium.FeatureGroup)
     at.run()
-    assert "center" not in calls[-1] and "zoom" not in calls[-1]  # the map stays where the user left it
+    assert "center" not in _main_call(calls) and "zoom" not in _main_call(calls)  # the map stays where the user left it
     at.run()
-    assert "center" not in calls[-1] and "zoom" not in calls[-1]
+    assert "center" not in _main_call(calls) and "zoom" not in _main_call(calls)
 
 
 def test_a_new_click_clears_the_previous_results(mocked, map_calls, building_point):
@@ -972,7 +976,7 @@ def test_sifirla_button_clears_the_inputs_including_the_bill(mocked, building_po
     _widget(at.radio, ROOF_LABEL).set_value("Tamamen düz").run()
     n0 = _widget(at.number_input, FLATS_LABEL).value
     _widget(at.number_input, FLATS_LABEL).set_value(n0 + 4).run()
-    [reset] = [b for b in at.button if b.label == "Sıfırla"]
+    [reset] = [b for b in at.sidebar.button if b.label == "Sıfırla"]
     reset.click().run()
     assert not at.exception
     assert at.session_state[app.KEY_BILL_KEEP] is None
@@ -1429,10 +1433,10 @@ def test_offset_round_trip_maps_a_displayed_shape_back_to_the_footprint_frame(sa
 
 def test_offset_is_clamped_and_described(sample_index, building_point):
     state = drawings.new_state("b")
-    for _ in range(30):
+    for _ in range(40):
         drawings.move_offset(state, 1.0, 0.0)
     drawings.move_offset(state, 0.0, 5.0)
-    assert state["offset"] == (20.0, 5.0) and drawings.offset_text(state["offset"]) == "Kaydırma: 20 m D, 5 m K"
+    assert state["offset"] == (30.0, 5.0) and drawings.offset_text(state["offset"]) == "Kaydırma: 30 m D, 5 m K"
     drawings.reset_offset(state)
     assert state["offset"] == (0.0, 0.0) and drawings.offset_text(state["offset"]) == "Kaydırma: yok"
 
@@ -1488,3 +1492,220 @@ def test_segment_table_and_chart_use_turkish_number_format(sample_index, buildin
     assert all("," in v and "." not in v.split(",")[-1] for v in plan)  # 83,8 and never 83.8
     assert tr_num(r["kullanilabilir_alan_m2"], 1) in plan  # the same rounding as the caption (no 83,9 vs 83,8)
     assert app.TR_AXIS_LABEL_EXPR == "replace(format(datum.value, ',.0f'), ',', '.')"
+
+
+# ------------------------------------- click-to-align and the always-visible roof map (display only)
+
+@pytest.fixture
+def roof_figs(map_calls, monkeypatch):
+    """Wraps the stubbed st_folium so the roof map figures are kept next to the calls: [(fig, kwargs)]."""
+    import streamlit_folium
+
+    calls, box = map_calls
+    inner, figs = streamlit_folium.st_folium, []
+
+    def fake(fig, **kwargs):
+        if str(kwargs.get("key", "")).startswith("roof_view"):
+            figs.append((fig, kwargs))
+        return inner(fig, **kwargs)
+
+    monkeypatch.setattr(streamlit_folium, "st_folium", fake)
+    return calls, box, figs
+
+
+def _has_draw_toolbar(fig):
+    from folium.plugins import Draw
+
+    return any(isinstance(c, Draw) for c in fig._children.values())
+
+
+def _click_at(inputs, dx, dy):
+    """A st_folium last_clicked dict dx/dy metres from the footprint centroid."""
+    c = shapely.from_wkb(inputs["footprint_wkb_m"]).centroid
+    lon, lat = drawings.to_wgs84(c.x + dx, c.y + dy)
+    return {"lat": lat, "lng": lon}
+
+
+def _flat_elements(block):
+    for child in block.children.values():
+        if hasattr(child, "children") and child.children:
+            yield from _flat_elements(child)
+        else:
+            yield child
+
+
+def _roof_draw(at):
+    return at.session_state[app.KEY_DRAWINGS]
+
+
+def _roof_map_calls(calls):
+    return [c for c in calls if str(c.get("key", "")).startswith("roof_view")]
+
+
+def test_click_to_align_sets_the_offset_from_the_click_and_turns_itself_off(mocked, roof_figs, sample_index, building_point):
+    calls, box, figs = roof_figs
+    inputs = _roof_inputs(sample_index, building_point)
+    at = _run_with_point(building_point)
+    _button(at, "Çatıya tıklayarak hizala").click().run()
+    assert _roof_draw(at)["align_active"] and app.ALIGN_CLICK_CAPTION in [c.value for c in at.caption]
+    assert not [b for b in at.button if b.label == "Çatıya tıklayarak hizala"] and _button(at, "İptal")
+    box["roof"] = {"all_drawings": None, "last_clicked": _click_at(inputs, 4.3, -6.6)}
+    at.run()
+    draw = _roof_draw(at)
+    assert not at.exception and draw["offset"] == (4.0, -7.0) and not draw["align_active"]
+    assert app.ALIGN_CLICK_CAPTION not in [c.value for c in at.caption]
+    assert draw["obstacles"] == [] and draw["terrace"] is None  # a click never creates drawings
+    assert "analysis" not in at.session_state
+    assert _button(at, "Çatıya tıklayarak hizala")
+
+
+def test_click_to_align_clamps_to_30_m_and_cancel_keeps_the_offset(mocked, roof_figs, sample_index, building_point):
+    calls, box, figs = roof_figs
+    inputs = _roof_inputs(sample_index, building_point)
+    at = _run_with_point(building_point)
+    _button(at, "Çatıya tıklayarak hizala").click().run()
+    box["roof"] = {"all_drawings": None, "last_clicked": _click_at(inputs, 80, -80)}
+    at.run()
+    assert _roof_draw(at)["offset"] == (30.0, -30.0)
+    _button(at, "Çatıya tıklayarak hizala").click().run()
+    _button(at, "İptal").click().run()
+    assert not _roof_draw(at)["align_active"] and _roof_draw(at)["offset"] == (30.0, -30.0)
+
+
+def test_an_identical_repeated_click_is_ignored(mocked, roof_figs, sample_index, building_point):
+    calls, box, figs = roof_figs
+    inputs = _roof_inputs(sample_index, building_point)
+    click = _click_at(inputs, 3.0, 2.0)
+    at = _run_with_point(building_point)
+    _button(at, "Çatıya tıklayarak hizala").click().run()
+    box["roof"] = {"all_drawings": None, "last_clicked": click}
+    at.run()
+    assert _roof_draw(at)["offset"] == (3.0, 2.0)
+    _button(at, "→").click().run()  # fine tuning after the click
+    _button(at, "Çatıya tıklayarak hizala").click().run()
+    at.run()
+    draw = _roof_draw(at)
+    assert draw["offset"] == (4.0, 2.0) and draw["align_active"]  # the stale identical click did nothing
+
+
+def test_clicks_while_the_mode_is_inactive_change_nothing(mocked, roof_figs, sample_index, building_point):
+    calls, box, figs = roof_figs
+    inputs = _roof_inputs(sample_index, building_point)
+    at = _run_with_point(building_point)
+    gen = _roof_draw(at)["gen"]
+    box["roof"] = {"all_drawings": None, "last_clicked": _click_at(inputs, 9.0, 9.0)}
+    at.run()
+    draw = _roof_draw(at)
+    assert draw["offset"] == (0.0, 0.0) and draw["gen"] == gen and not draw["align_active"] and draw["last_click"] is None
+    assert at.session_state["selected_point"] == building_point
+
+
+def test_last_clicked_is_returned_and_the_draw_toolbar_shown_only_outside_the_mode(mocked, roof_figs, building_point):
+    calls, box, figs = roof_figs
+    at = _run_with_point(building_point)
+    fig, kwargs = figs[-1]
+    assert kwargs["returned_objects"] == ["all_drawings"] and _has_draw_toolbar(fig)
+    _button(at, "Çatıya tıklayarak hizala").click().run()
+    fig, kwargs = figs[-1]
+    assert "last_clicked" in kwargs["returned_objects"] and not _has_draw_toolbar(fig)
+    assert kwargs["key"] == "roof_view_1"  # toggling the mode bumps the map generation
+    _button(at, "İptal").click().run()
+    fig, kwargs = figs[-1]
+    assert kwargs["returned_objects"] == ["all_drawings"] and _has_draw_toolbar(fig) and kwargs["key"] == "roof_view_2"
+
+
+def test_drawings_returned_while_aligning_are_not_read(mocked, roof_figs, sample_index, building_point):
+    calls, box, figs = roof_figs
+    inputs = _roof_inputs(sample_index, building_point)
+    at = _run_with_point(building_point)
+    _button(at, "Çatıya tıklayarak hizala").click().run()
+    box["roof"] = {"all_drawings": [_feature(_centre_obstacle(inputs))], "last_clicked": None}
+    at.run()
+    assert _roof_draw(at)["obstacles"] == []
+
+
+def test_offset_steps_of_1_m_and_5_m_clamp_at_30_m(mocked, roof_figs, building_point):
+    at = _run_with_point(building_point)
+    assert {"↑", "↓", "←", "→", "5 m ↑", "5 m ↓", "5 m ←", "5 m →"} <= {b.label for b in at.button}
+    _button(at, "5 m →").click().run()
+    _button(at, "5 m ↑").click().run()
+    _button(at, "←").click().run()
+    assert _roof_draw(at)["offset"] == (4.0, 5.0)
+    for _ in range(8):
+        _button(at, "5 m →").click().run()
+    assert _roof_draw(at)["offset"][0] == 30.0
+    for _ in range(8):
+        _button(at, "5 m ↓").click().run()
+    assert _roof_draw(at)["offset"][1] == -30.0
+    state = drawings.new_state("b")
+    drawings.move_offset(state, 100.0, -100.0)
+    assert state["offset"] == (30.0, -30.0)
+
+
+def test_drawings_and_offset_made_before_hesapla_are_used_by_the_result(mocked, roof_figs, monkeypatch, sample_index, building_point):
+    calls, box, figs = roof_figs
+    pvgis = []
+    real_yield, real_face = solar.get_solar_yield, solar.get_face_yield
+    monkeypatch.setattr(solar, "get_solar_yield", lambda *a, **k: pvgis.append(a) or real_yield(*a, **k))
+    monkeypatch.setattr(solar, "get_face_yield", lambda *a, **k: pvgis.append(a) or real_face(*a, **k))
+    inputs = _roof_inputs(sample_index, building_point)
+    at = _run_with_point(building_point)
+    _button(at, "5 m →").click().run()
+    box["roof"] = {"all_drawings": [_feature(shapely.affinity.translate(_centre_obstacle(inputs), 5.0, 0.0))]}
+    at.run()
+    draw = _roof_draw(at)
+    assert not at.exception and draw["offset"] == (5.0, 0.0) and len(draw["obstacles"]) == 1
+    assert pvgis == [] and "analysis" not in at.session_state and "result" not in at.session_state  # nothing evaluated
+    _button(at, "Hesapla").click().run()
+    assert not at.exception and pvgis
+    r = at.session_state["result"]
+    assert r["guc_kaynagi"] == "geometri" and r["cizilen_engel_sayisi"] == 1
+    assert _roof_draw(at)["offset"] == (5.0, 0.0)
+
+
+def test_after_hesapla_drawing_changes_still_recompute_without_pvgis(mocked, roof_figs, monkeypatch, sample_index, building_point):
+    calls, box, figs = roof_figs
+    at = _after_hesapla(building_point)
+    _no_pvgis(monkeypatch)
+    box["roof"] = {"all_drawings": [_feature(_centre_obstacle(_roof_inputs(sample_index, building_point)))]}
+    at.run()
+    assert at.session_state["result"]["guc_kaynagi"] == "geometri"
+
+
+def test_before_hesapla_the_roof_map_shows_outline_and_setback_but_no_panels(mocked, roof_figs, building_point):
+    calls, box, figs = roof_figs
+    at = _run_with_point(building_point)
+    _, kwargs = figs[-1]
+    fg = kwargs["feature_group_to_add"]
+    assert len([c for c in fg._children.values() if isinstance(c, folium.Polygon)]) == 2  # footprint + setback
+    assert not [c for c in fg._children.values() if isinstance(c, folium.Marker)]  # no label yet
+    assert app.ROOF_VIEW_PRE_CAPTION in [c.value for c in at.caption]
+    _button(at, "Hesapla").click().run()
+    fg = figs[-1][1]["feature_group_to_add"]
+    assert len([c for c in fg._children.values() if isinstance(c, folium.Polygon)]) > 2
+    assert [c for c in fg._children.values() if isinstance(c, folium.Marker)]
+    assert app.ROOF_VIEW_PRE_CAPTION not in [c.value for c in at.caption]
+
+
+def test_exactly_one_roof_map_per_run_and_it_sits_above_hesapla(mocked, roof_figs, building_point):
+    calls, box, figs = roof_figs
+    at = _run_with_point(building_point, skip=False)
+    assert _roof_map_calls(calls)  # visible as soon as a building is selected
+    _button(at, "Fotoğrafsız devam et").click().run()
+    calls.clear()
+    at.run()
+    assert len(_roof_map_calls(calls)) == 1
+
+    def order():
+        marks = [
+            "roof" if e.type == "subheader" and e.value == "Çatı görünümü" else "hesapla" if e.type == "button" and e.label == "Hesapla" else None
+            for e in _flat_elements(at.main)
+        ]
+        return [m for m in marks if m]
+
+    assert order() == ["roof", "hesapla"]
+    _button(at, "Hesapla").click().run()
+    assert not at.exception and order() == ["roof", "hesapla"]  # still one roof view, still above the button
+    calls.clear()
+    at.run()
+    assert len(_roof_map_calls(calls)) == 1

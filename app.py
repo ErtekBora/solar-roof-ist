@@ -67,6 +67,11 @@ PITCHED_CHOICES = list(building_mode.PITCHED_TYPE_LABELS_TR.values())
 PITCHED_FROM_CHOICE = {label: key for key, label in building_mode.PITCHED_TYPE_LABELS_TR.items()}
 HIP_CHOICE = building_mode.PITCHED_TYPE_LABELS_TR["hip"]
 DRAW_OBSTACLE, DRAW_TERRACE = "Engel çiz", "Teras çiz"
+ALIGN_CLICK_LABEL, ALIGN_CANCEL_LABEL = "Çatıya tıklayarak hizala", "İptal"
+ALIGN_CLICK_CAPTION = "Uydu görüntüsünde çatının ortasına bir kez tıklayın."
+ROOF_VIEW_PRE_CAPTION = (
+    "Çatı fotoğrafınız yoksa uydu görüntüsüne bakarak çerçeveyi hizalayın ve engelleri şimdi çizebilirsiniz."
+)
 ALIGN_CAPTION = (
     "Yüksek binalarda uydu görüntüsü çatıyı yana kaymış gösterir. Beyaz çerçeveyi görüntüdeki çatının üstüne getirin, "
     "engelleri sonra çizin. Hesap yine bina izi (OpenStreetMap) üzerinden yapılır."
@@ -1181,22 +1186,24 @@ def _reset_clicked():
 
 # ---------------------------------------------------------------- roof view
 
-def build_roof_map(center):
+def build_roof_map(center, draw_tools=True):
     """Static part of the roof map: Esri World Imagery (DISPLAY ONLY, attribution kept) and the Draw control
-    (rectangle and polygon only; editing off, deleting on)."""
+    (rectangle and polygon only; editing off, deleting on). `draw_tools=False` (click-to-align mode) omits the
+    toolbar so an alignment click can never add a vertex."""
     # no scroll-wheel zoom: page scrolling must not be hijacked (the +/- buttons stay)
     m = folium.Map(location=center, zoom_start=ROOF_VIEW_ZOOM, max_zoom=21, tiles=None, scroll_wheel_zoom=False)
     folium.TileLayer(
         tiles=ESRI_TILES_URL, attr=ESRI_ATTRIBUTION, name="Uydu (yalnızca görüntüleme)", max_native_zoom=19, max_zoom=21,
     ).add_to(m)
-    Draw(
-        export=False, position="topleft", show_geometry_on_click=False,
-        draw_options={
-            "polyline": False, "circle": False, "marker": False, "circlemarker": False,
-            "rectangle": {"shapeOptions": {"color": "#f59e0b"}}, "polygon": {"shapeOptions": {"color": "#f59e0b"}},
-        },
-        edit_options={"edit": False, "remove": True},
-    ).add_to(m)
+    if draw_tools:
+        Draw(
+            export=False, position="topleft", show_geometry_on_click=False,
+            draw_options={
+                "polyline": False, "circle": False, "marker": False, "circlemarker": False,
+                "rectangle": {"shapeOptions": {"color": "#f59e0b"}}, "polygon": {"shapeOptions": {"color": "#f59e0b"}},
+            },
+            edit_options={"edit": False, "remove": True},
+        ).add_to(m)
     return m
 
 
@@ -1232,46 +1239,49 @@ def drawn_panel_count(roof):
     return sum(len(p) for p in drawn_panels(roof).values())
 
 
-def build_roof_overlay(roof, draw, result):
-    """Dynamic layers of the roof map: footprint, setback, panels, dropped faces, user shapes and the label."""
+def build_roof_overlay(footprint, setback, draw, roof=None, result=None):
+    """Dynamic layers of the roof map: footprint, setback and user shapes; with a calculated `roof` (after 'Hesapla')
+    also the dropped faces, the panels and the label."""
     fg = folium.FeatureGroup(name="Çatı")
     off = draw.get("offset", (0.0, 0.0))  # display-only imagery alignment: every overlay moves, the data does not
-    for ring in drawings.polygon_to_latlon(roof["footprint"], off):
+    for ring in drawings.polygon_to_latlon(footprint, off):
         folium.Polygon(ring, color="#ffffff", weight=2, fill=False, interactive=False).add_to(fg)
-    if roof["model"]["setback"] is not None:
-        for ring in drawings.polygon_to_latlon(roof["model"]["setback"], off):
+    if setback is not None:
+        for ring in drawings.polygon_to_latlon(setback, off):
             folium.Polygon(ring, color="#ffffff", weight=1, dash_array="5", fill=False, interactive=False).add_to(fg)
-    for face in roof["model"]["faces"]:
-        if layout.face_segment_name(face["name"]) in roof["skip"] and face["polygon"] is not None:
-            for ring in drawings.polygon_to_latlon(face["polygon"], off):
+    if roof is not None:
+        for face in roof["model"]["faces"]:
+            if layout.face_segment_name(face["name"]) in roof["skip"] and face["polygon"] is not None:
+                for ring in drawings.polygon_to_latlon(face["polygon"], off):
+                    folium.Polygon(
+                        ring, color="#6b7280", weight=1, fill=True, fill_color="#6b7280", fill_opacity=0.35,
+                        tooltip=DROPPED_FACE_TOOLTIP,
+                    ).add_to(fg)
+                for line in layout.hatch_lines(face["polygon"]):
+                    folium.PolyLine(_metric_ring_latlon(line.coords, off), color="#374151", weight=1, interactive=False).add_to(fg)
+        for panels in drawn_panels(roof).values():
+            for corners in panels:
                 folium.Polygon(
-                    ring, color="#6b7280", weight=1, fill=True, fill_color="#6b7280", fill_opacity=0.35,
-                    tooltip=DROPPED_FACE_TOOLTIP,
+                    _metric_ring_latlon(corners, off), color="#1d4ed8", weight=1, fill=True, fill_color="#3b82f6",
+                    fill_opacity=0.75, interactive=False,
                 ).add_to(fg)
-            for line in layout.hatch_lines(face["polygon"]):
-                folium.PolyLine(_metric_ring_latlon(line.coords, off), color="#374151", weight=1, interactive=False).add_to(fg)
-    for panels in drawn_panels(roof).values():
-        for corners in panels:
-            folium.Polygon(
-                _metric_ring_latlon(corners, off), color="#1d4ed8", weight=1, fill=True, fill_color="#3b82f6",
-                fill_opacity=0.75, interactive=False,
-            ).add_to(fg)
     for shape in drawings.stored_shapes(draw):
         color = "#16a34a" if shape["kind"] == drawings.TERRACE else "#dc2626"
         for ring in drawings.polygon_to_latlon(shape["geom"], off):
             folium.Polygon(ring, color=color, weight=2, fill=True, fill_color=color, fill_opacity=0.3, interactive=False).add_to(fg)
-    bounds = roof["footprint"].bounds
-    lon, lat = drawings.to_wgs84((bounds[0] + bounds[2]) / 2 + off[0], bounds[3] + off[1])
-    folium.Marker(
-        [lat, lon],
-        icon=folium.DivIcon(
-            icon_size=(320, 24), icon_anchor=(160, 34),
-            html=(
-                "<div style='background:rgba(17,24,39,.85);color:#fff;padding:3px 8px;border-radius:4px;"
-                f"font-size:12px;white-space:nowrap;text-align:center'>{roof_label(roof, result)}</div>"
+    if roof is not None:
+        bounds = footprint.bounds
+        lon, lat = drawings.to_wgs84((bounds[0] + bounds[2]) / 2 + off[0], bounds[3] + off[1])
+        folium.Marker(
+            [lat, lon],
+            icon=folium.DivIcon(
+                icon_size=(320, 24), icon_anchor=(160, 34),
+                html=(
+                    "<div style='background:rgba(17,24,39,.85);color:#fff;padding:3px 8px;border-radius:4px;"
+                    f"font-size:12px;white-space:nowrap;text-align:center'>{roof_label(roof, result)}</div>"
+                ),
             ),
-        ),
-    ).add_to(fg)
+        ).add_to(fg)
     return fg
 
 
@@ -1295,7 +1305,15 @@ def _reset_offset():
     drawings.reset_offset(st.session_state[KEY_DRAWINGS])
 
 
-def roof_map_center(roof, draw, building):
+def _start_align():
+    drawings.start_align(st.session_state[KEY_DRAWINGS])
+
+
+def _cancel_align():
+    drawings.cancel_align(st.session_state[KEY_DRAWINGS])
+
+
+def roof_map_center(draw, building):
     """Map centre: the building centroid moved by the alignment offset (metric shift, then back to lat/lon)."""
     off = draw.get("offset", (0.0, 0.0))
     if off == (0.0, 0.0):
@@ -1307,26 +1325,41 @@ def roof_map_center(roof, draw, building):
 
 
 def alignment_control(draw):
-    """'Çerçeveyi çatıya hizala': arrow buttons (1 m per click), reset and the current offset. Display only."""
-    step = drawings.OFFSET_STEP_M
+    """'Çerçeveyi çatıya hizala': click-to-align, arrow buttons (1 m and 5 m per click), reset and the current offset.
+    Display only."""
     st.markdown("**Çerçeveyi çatıya hizala**")
-    cols = st.columns([1, 1, 1, 1, 1, 3])
-    for col, label, delta in zip(cols, ("↑", "↓", "←", "→"), ((0, step), (0, -step), (-step, 0), (step, 0))):
-        col.button(label, key=f"align_{label}", on_click=_move_offset, args=delta)
-    cols[4].button("Sıfırla", key="align_reset", on_click=_reset_offset)
-    cols[5].markdown(drawings.offset_text(draw["offset"]))
+    if draw.get("align_active"):
+        st.button(ALIGN_CANCEL_LABEL, key="align_cancel", on_click=_cancel_align)
+        st.caption(ALIGN_CLICK_CAPTION)
+    else:
+        st.button(ALIGN_CLICK_LABEL, key="align_click", on_click=_start_align)
+    for step, prefix in ((drawings.OFFSET_STEP_M, ""), (drawings.OFFSET_STEP_BIG_M, "5 m ")):
+        cols = st.columns([1, 1, 1, 1, 1, 3])
+        deltas = ((0, step), (0, -step), (-step, 0), (step, 0))
+        for col, arrow, delta in zip(cols, ("↑", "↓", "←", "→"), deltas):
+            col.button(f"{prefix}{arrow}", key=f"align{prefix.strip()}_{arrow}", on_click=_move_offset, args=delta)
+        if not prefix:
+            cols[4].button("Sıfırla", key="align_reset", on_click=_reset_offset)
+            cols[5].markdown(drawings.offset_text(draw["offset"]))
     st.caption(ALIGN_CAPTION)
 
 
-def roof_view_section(state, roof, result, building):
-    """'Çatı görünümü': the second map (isolated from the building selection) and the drawing tools.
+def roof_view_section(state, building, roof=None, result=None):
+    """'Çatı görünümü': the one roof map (isolated from the building selection) and the drawing tools.
 
-    Only `all_drawings` is returned from this map; its clicks never change the selected building. A change to the
-    stored drawings reruns once so the cards above use it; a real deletion/replacement also bumps the map key.
+    Rendered in one fixed place above 'Hesapla'. Before 'Hesapla' (`roof` is None) it shows the footprint, the setback
+    line and the user's shapes only; drawing and offset changes just update the stored state. After 'Hesapla' it also
+    shows panels, dropped faces and the label. Only `all_drawings` is returned from this map (plus `last_clicked`
+    while click-to-align is active; then the Draw toolbar is hidden and drawings are not read). Its clicks never
+    change the selected building. A change to the stored drawings reruns once so the cards use it; a real
+    deletion/replacement also bumps the map key.
     """
     st.subheader("Çatı görünümü")
     draw = drawing_state(state, building)
-    modes = [DRAW_OBSTACLE, DRAW_TERRACE] if result["cati_yapisi"] == "mixed" else [DRAW_OBSTACLE]
+    footprint = shapely.from_wkb(building["footprint_wkb_m"])
+    setback = roof["model"]["setback"] if roof is not None else layout.setback_polygon(footprint)
+    structure = result["cati_yapisi"] if result is not None else STRUCTURE_FROM_CHOICE.get(state.get(KEY_STRUCTURE))
+    modes = [DRAW_OBSTACLE, DRAW_TERRACE] if structure == "mixed" else [DRAW_OBSTACLE]
     if state.get(KEY_DRAW_MODE) not in modes:
         state.pop(KEY_DRAW_MODE, None)  # widget not created yet in this run: safe to reset
     c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
@@ -1338,15 +1371,24 @@ def roof_view_section(state, roof, result, building):
         "Haritanın solundaki araçlarla dikdörtgen veya çokgen çizin. Engeller kırmızı, teras yeşil gösterilir. "
         "Çizimleri silmek için 'Engelleri temizle' veya 'Son çizimi geri al' düğmelerini kullanın."
     )
+    if roof is None:
+        st.caption(ROOF_VIEW_PRE_CAPTION)
     alignment_control(draw)
-    for note in roof["notes"]:
+    for note in (roof["notes"] if roof is not None else []):
         st.info(note)
+    aligning = bool(draw.get("align_active"))
     data = st_folium(
-        build_roof_map(roof_map_center(roof, draw, building)), key=drawings.map_key(draw), returned_objects=["all_drawings"],
-        feature_group_to_add=build_roof_overlay(roof, draw, result), height=520, use_container_width=True,
+        build_roof_map(roof_map_center(draw, building), draw_tools=not aligning), key=drawings.map_key(draw),
+        returned_objects=["all_drawings", "last_clicked"] if aligning else ["all_drawings"],
+        feature_group_to_add=build_roof_overlay(footprint, setback, draw, roof, result), height=520, use_container_width=True,
     )
-    mode = drawings.TERRACE if mode_label == DRAW_TERRACE else drawings.OBSTACLE
-    change = drawings.sync(draw, (data or {}).get("all_drawings"), mode, roof["footprint"])
+    if aligning:
+        if drawings.apply_click(draw, (data or {}).get("last_clicked"), footprint):
+            st.rerun()  # once: the mode is off and the map is rebuilt at the new offset
+        change = {"changed": False}  # a click never creates, changes or deletes drawings
+    else:
+        mode = drawings.TERRACE if mode_label == DRAW_TERRACE else drawings.OBSTACLE
+        change = drawings.sync(draw, (data or {}).get("all_drawings"), mode, footprint)
     if change["changed"]:
         st.rerun()  # once: the cards above and the map key follow the new drawings (a notice waits in the state)
     notice, draw["notice"] = draw.get("notice"), None
@@ -1410,6 +1452,7 @@ def main():
         st.caption(ATTRIBUTION)
 
     image_bytes, photo_name, is_demo, pressed = None, None, False, False
+    roof_slot = None  # the one fixed place of the roof map: above 'Hesapla', filled once per run further down
     area = 150.0
     if point:
         st.markdown("---")
@@ -1425,6 +1468,9 @@ def main():
         image_bytes, photo_name, is_demo, ready = photo_step(state)
         if ready:
             optional_inputs_step(state)
+        if building is not None:
+            roof_slot = st.container()
+        if ready:
             pressed = st.button("Hesapla", type="primary")
 
     preselect_rerun = False
@@ -1497,6 +1543,9 @@ def main():
         st.rerun()
 
     analysis = state.get("analysis")
+    if not analysis and roof_slot is not None:
+        with roof_slot:  # before 'Hesapla': imagery, outline, alignment and drawing tools only; no evaluation
+            roof_view_section(state, building)
     if analysis:
         detection = analysis["detection"]
         applies = analysis["inputs"]["photo_applies"]
@@ -1520,7 +1569,8 @@ def main():
         eff_detection = explained_detection(detection, ids or set(), inputs)
         show_cards(result, inputs, eff_detection is not None, inputs["building"])
         if roof is not None:
-            roof_view_section(state, roof, result, inputs["building"])
+            with roof_slot:
+                roof_view_section(state, inputs["building"], roof, result)
         else:
             st.caption("Çatı görünümü yalnızca haritadan seçilen binalar için gösterilir (bina izi gerekir).")
         explanation_section(analysis, result, eff_detection)
