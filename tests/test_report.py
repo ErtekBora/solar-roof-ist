@@ -90,7 +90,7 @@ def test_breakdown_rows_follow_the_capacity_source():
     steps = [row["Adım"] for row in numeric]
     assert "Kenar boşluğu sonrası alan" in steps and "Kullanılabilir alan" in steps and "Panel sayısı" not in steps
     usable = next(row for row in numeric if row["Adım"] == "Kullanılabilir alan")
-    assert usable["Hesap"].startswith("499,5 × 0,325 = 162,2 m²") and usable["Kaynak"] == report.SOURCE_ASSUMPTION
+    assert usable["Hesap"].startswith("499,5 × 0,325 ≈ 162,2 m²") and usable["Kaynak"] == report.SOURCE_ASSUMPTION
     geo = _result(geometry=[{"Güney yüzü": {"plan_m2": 120.0, "panels": 40}}])
     geo_steps = [row["Adım"] for row in report.breakdown_rows(geo)]
     assert "Panel sayısı" in geo_steps and "Kullanılabilir alan" not in geo_steps

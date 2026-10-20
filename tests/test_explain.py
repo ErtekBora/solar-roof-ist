@@ -489,3 +489,21 @@ def test_payload_carries_layout_fields_and_template_validates(result):
 def test_no_drawing_fields_without_a_drawing(result):
     p = build_payload({**result, "cizilen_engel_sayisi": None, "daire_payi_yuksek": False})
     assert "cizilen_engel_sayisi" not in p and "cizilen_engel_alani_m2" not in p and "daire_payi_kwh_ay" not in p
+
+
+@pytest.mark.parametrize("tip", [
+    "- Kuşbakışı (yukarıdan çekilmiş) bir fotoğraf deneyin.",
+    "- Uydu görüntüsü yükleyin.",
+    "- Bir hava fotoğrafı deneyin.",
+    "- KUŞBAKIŞI fotoğraf deneyin.",
+])
+def test_imagery_tips_are_replaced_by_the_standard_tip(tip):
+    out = explain.sanitize_tips(f"Karar\nParagraf\n{tip}\n- Daire sayısını girin.")
+    assert tip not in out and "- " + explain.PHOTO_OR_DRAW_TIP in out and "- Daire sayısını girin." in out
+    assert "uydu çanağı" in explain.sanitize_tips("- 2 uydu çanağını taşıyın.")
+
+
+def test_template_fallback_and_gemini_text_never_suggest_imagery(result, detection):
+    text = build_fallback_explanation(result, None, False)
+    assert not any(explain._BAD_TIP_RE.search(explain._tr_lower(ln)) for ln in text.splitlines() if ln.startswith("-"))
+    assert explain.PHOTO_OR_DRAW_TIP in text

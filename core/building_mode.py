@@ -392,7 +392,7 @@ def analyze_building(
         "toplam_cati_alani_m2": roof_area_m2,
         "engel_orani": obstacle_ratio,
         "engel_alani_m2": None if obstacle_ratio is None else round(roof_area_m2 * obstacle_ratio, 2),
-        "kullanilabilir_alan_m2": round(usable, 2),
+        "kullanilabilir_alan_m2": usable,  # unrounded: display rounds once (no 83,9 vs 83,8)
         "daire_sayisi": n,
         "daire_sayisi_tahmini": bool(n_flats_estimated),
         "senaryolar": scenarios,

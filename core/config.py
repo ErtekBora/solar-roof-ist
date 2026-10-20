@@ -55,14 +55,17 @@ TAX_FACTOR = 1.26  # 5% BTV then 20% KDV, approximate
 # Installation cost (numbers only from here; the cost tool never invents prices)
 COST_SOURCE = (
     "Satıcı fiyat sayfaları, 2026 (KDV ve kurulum dahil; panel, inverter, konstrüksiyon, kablolama, proje ve EDAŞ "
-    "başvurusu). Gerçek fiyat teklifle netleşir."
+    "başvurusu). Gerçek fiyat teklifle netleşir. Büyük sistemlerde kWp başına üst sınır, ölçek ekonomisi nedeniyle "
+    "küçük sistemin üst sınırını aşmaz."
 )
 # (exclusive upper kWp limit, TL/kWp low, TL/kWp high); derived from published 2026 totals:
 # 5 kWp 120,000-180,000 TL; 10 kWp 220,000-320,000 TL; 15-20 kWp 350,000-550,000 TL
+# Bands are monotonic (economies of scale): a larger band's per-kWp upper bound never exceeds the smaller band's,
+# so the >= 12.5 kWp upper bound is min(36,700 sourced, 32,000 previous band) = 32,000.
 COST_BANDS_TL_PER_KWP = (
     (7.5, 24000, 36000),
     (12.5, 22000, 32000),
-    (float("inf"), 17500, 36700),
+    (float("inf"), 17500, 32000),
 )
 COST_BAND_MAX_SOURCED_KWP = 20  # above it the last band is kept and flagged as less certain
 

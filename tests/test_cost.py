@@ -12,9 +12,9 @@ from core.cost import combine_cost_scenarios, estimate_install_cost, per_flat_co
         (7.4, (24000, 36000)),
         (7.5, (22000, 32000)),
         (12.4, (22000, 32000)),
-        (12.5, (17500, 36700)),
-        (20, (17500, 36700)),
-        (25, (17500, 36700)),
+        (12.5, (17500, 32000)),
+        (20, (17500, 32000)),
+        (25, (17500, 32000)),
     ],
 )
 def test_band_boundaries(kwp, band):
@@ -72,7 +72,7 @@ def test_scenario_combination_with_a_dropped_north_face_pitched_smaller_than_fla
     flat, pitched = estimate_install_cost(12.6), estimate_install_cost(7.4)
     for order in ([flat, pitched], [pitched, flat]):
         low, high = combine_cost_scenarios([c[:2] for c in order])
-        assert low == pytest.approx(7.4 * 24000) and high == pytest.approx(12.6 * 36700)
+        assert low == pytest.approx(7.4 * 24000) and high == pytest.approx(12.6 * 32000)
 
 
 def test_pitched_larger_than_flat_gives_the_same_formula():

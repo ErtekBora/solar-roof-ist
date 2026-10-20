@@ -1476,4 +1476,15 @@ def test_offset_resets_for_a_new_building(sample_index, building_point):
 def test_report_mentions_a_non_zero_offset_only(sample_index):
     assert report.alignment_row((0.0, 0.0)) is None and report.alignment_row(None) is None
     row = report.alignment_row((3.0, -2.0))
-    assert row["Hesap"] == "3 m doğu, -2 m kuzey (yalnızca gösterim)"
+    assert row["Hesap"] == "3 m doğu, 2 m güney (yalnızca gösterim)"
+
+
+def test_segment_table_and_chart_use_turkish_number_format(sample_index, building_point, mocked):
+    from core.formatting import tr_num
+    inputs = _roof_inputs(sample_index, building_point, structure="flat")
+    r, _, _ = app.evaluate(_roof_analysis(inputs), inputs, None, set(), _draw_state(inputs))
+    table = app.segment_table(r)
+    plan = table["Plan alanı (m²)"].tolist()
+    assert all("," in v and "." not in v.split(",")[-1] for v in plan)  # 83,8 and never 83.8
+    assert tr_num(r["kullanilabilir_alan_m2"], 1) in plan  # the same rounding as the caption (no 83,9 vs 83,8)
+    assert app.TR_AXIS_LABEL_EXPR == "replace(format(datum.value, ',.0f'), ',', '.')"

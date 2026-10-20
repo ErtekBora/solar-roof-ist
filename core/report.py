@@ -75,13 +75,18 @@ def _segment_rows(sc, geometric, prefix):
     return rows
 
 
+def _direction(value, positive, negative):
+    return f"{tr_num(abs(value))} m {positive if value >= 0 else negative}"
+
+
 def alignment_row(offset):
     """Display-only imagery alignment shift of the roof view; None at zero (or no offset)."""
     if not offset or (offset[0] == 0 and offset[1] == 0):
         return None
     return _row(
         "Görüntü hizalama kaydırması",
-        f"{tr_num(offset[0])} m doğu, {tr_num(offset[1])} m kuzey (yalnızca gösterim)", "kullanıcı ayarı",
+        f"{_direction(offset[0], 'doğu', 'batı')}, {_direction(offset[1], 'kuzey', 'güney')} (yalnızca gösterim)",
+        "kullanıcı ayarı",
     )
 
 
@@ -111,7 +116,7 @@ def breakdown_rows(r, offset=None):
         src = r.get("guc_kaynagi", "ortalama")
         rows.append(_row(
             "Kullanılabilir alan",
-            f"{_n(r['alan_tabani_m2'], 1)} × {_n(r['kullanilabilir_oran'], 3)} = {_n(r['kullanilabilir_alan_m2'], 1)} m² "
+            f"{_n(r['alan_tabani_m2'], 1)} × {_n(r['kullanilabilir_oran'], 3)} ≈ {_n(r['kullanilabilir_alan_m2'], 1)} m² "
             f"({_RATIO_NOTE[src]})",
             _RATIO_SOURCE[src],
         ))

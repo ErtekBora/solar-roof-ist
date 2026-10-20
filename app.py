@@ -71,8 +71,12 @@ ALIGN_CAPTION = (
     "Yüksek binalarda uydu görüntüsü çatıyı yana kaymış gösterir. Beyaz çerçeveyi görüntüdeki çatının üstüne getirin, "
     "engelleri sonra çizin. Hesap yine bina izi (OpenStreetMap) üzerinden yapılır."
 )
+# Vega cannot take a Turkish locale through st.altair_chart: swap the separators of the tick labels (2,200 -> 2.200)
+TR_AXIS_LABEL_EXPR = "replace(format(datum.value, ',.0f'), ',', '.')"
 ROOF_VIEW_CAPTION = (
-    "Uydu görüntüsü yalnızca gösterim içindir; tarihi farklı olabilir ve bina sınırıyla birkaç metre kayabilir."
+    "Uydu görüntüsü (Esri World Imagery) yalnızca gösterim içindir; tarihi farklı olabilir ve yüksek binalarda çatı "
+    "birkaç metre kaymış görünebilir. Görüntü hiçbir modele gönderilmez, saklanmaz veya analiz edilmez. "
+    + ESRI_ATTRIBUTION
 )
 NOTE_AVERAGE = "Ortalama engel payı düşüldü — engelleri çizerek netleştirin"
 NOTE_PHOTO = "Fotoğraftaki engel payı düşüldü — engelleri çizerek netleştirin"
@@ -821,12 +825,14 @@ def monthly_chart(result):
     groups = {row["Grup"] for row in rows}
     enc = dict(
         x=alt.X("Ay:N", sort=MONTHS_TR, title=None),
-        y=alt.Y("kWh:Q", title="Aylık üretim (kWh)"),
+        y=alt.Y("kWh:Q", title="Aylık üretim (kWh)", axis=alt.Axis(labelExpr=TR_AXIS_LABEL_EXPR)),
         color=alt.Color("Seri:N", title=None),
-        tooltip=["Ay", "Grup", "Seri", alt.Tooltip("kWh:Q", format=",.1f")],
+        tooltip=["Ay", "Grup", "Seri", alt.Tooltip("kWh (metin):N", title="kWh")],
     )
     if len(groups) > 1:
         enc["xOffset"] = "Grup:N"
+    for row in rows:
+        row["kWh (metin)"] = tr_num(row["kWh"], 1)
     chart = alt.Chart(pd.DataFrame(rows)).mark_bar().encode(**enc).properties(height=320)
     st.altair_chart(chart, use_container_width=True)
 
@@ -844,9 +850,9 @@ def segment_table(result):
                 continue
             rows.append({
                 "Senaryo": sc["etiket"], "Bölüm": seg["ad"], "Durum": status[seg["durum"]],
-                "Plan alanı (m²)": round(seg["plan_m2"], 1),
-                "Yüzey alanı (m²)": round(seg["yuzey_m2"], 1) if "yuzey_m2" in seg else round(seg["plan_m2"], 1),
-                "kWp": round(seg["kwp"], 1), "kWh/yıl": round(sum(seg["aylik_kwh"])),
+                "Plan alanı (m²)": tr_num(seg["plan_m2"], 1),
+                "Yüzey alanı (m²)": tr_num(seg.get("yuzey_m2", seg["plan_m2"]), 1),
+                "kWp": tr_num(seg["kwp"], 1), "kWh/yıl": tr_num(sum(seg["aylik_kwh"])),
             })
     return pd.DataFrame(rows)
 
@@ -999,10 +1005,10 @@ def show_monthly(r):
     st.subheader("Aylık üretim")
     monthly_chart(r)
     st.dataframe(segment_table(r), hide_index=True, width="stretch")
-    st.caption(
-        f"Düz bölüm en uygun eğim ({r['panel_egim_derece']}°) ve yönde; eğimli yüzler {DEFAULT_ROOF_PITCH_DEG}° eğimle "
-        f"mahyaya dik yönlerde varsayıldı. Kullanılabilir plan alanı: {tr_num(r['kullanilabilir_alan_m2'], 1)} m²."
-    )
+    tilt = f"Düz bölüm en uygun eğim ({r['panel_egim_derece']}°) ve yönde"
+    if r["cati_yapisi"] != "flat":
+        tilt += f"; eğimli yüzler {DEFAULT_ROOF_PITCH_DEG}° eğimle mahyaya dik yönlerde varsayıldı"
+    st.caption(f"{tilt}. Kullanılabilir plan alanı: {tr_num(r['kullanilabilir_alan_m2'], 1)} m².")
 
 
 EXPLANATION_CAPTIONS = {
@@ -1347,8 +1353,7 @@ def roof_view_section(state, roof, result, building):
     if notice:
         st.warning(notice)
     st.caption(TRASH_NOTE)
-    st.caption(ROOF_VIEW_CAPTION + " " + ESRI_ATTRIBUTION)
-    st.caption(report.IMAGERY_NOTE)
+    st.caption(ROOF_VIEW_CAPTION)
 
 
 def breakdown_section(result, offset=None):
