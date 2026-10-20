@@ -42,6 +42,7 @@ from core.config import (
     get_gemini_api_key,
 )
 from core.formatting import percent_from_ratio, round_half_up, tr_num
+from core.report import ratio_panel_text
 from core.solar import SolarDataError, fetch_roof_yields
 from core.vision import (
     OBSTACLE_LABELS_TR,
@@ -60,7 +61,16 @@ MIXED_CHOICE = building_mode.STRUCTURE_LABELS_TR["mixed"]
 # session keys: stable widget keys, plus bookkeeping for the per-building reset
 KEY_BILL, KEY_FLATS, KEY_STRUCTURE, KEY_SHARE = "bill_input", "n_flats", "roof_structure", "flat_share"
 KEY_BUILDING, KEY_FLATS_ESTIMATE, KEY_PENDING_ROOF = "_input_building", "_flats_estimate", "_pending_roof"
-KEY_BILL_KEEP, KEY_PHOTO_STEP, KEY_MANUAL_AREA = "_bill_keep", "_photo_step", "manual_area"
+KEY_BILL_KEEP, KEY_MANUAL_AREA = "_bill_keep", "manual_area"
+# obstacle source: ONE active source; the other sources' data stays in the state and is ignored meanwhile
+KEY_SOURCE, KEY_DEMO, KEY_DEMO_CACHE = "obstacle_source", "demo_choice", "_demo_cache"
+KEY_PHOTO, KEY_PHOTO_LIVE, KEY_PHOTO_RESULT = "_photo", "_photo_uploader_live", "_photo_result"
+SRC_DRAW = "Haritada çizerek (önerilen)"
+SRC_PHOTO = "Kendi çatı fotoğrafımla (YZ analizi)"
+SRC_DEMO = "Örnek fotoğrafla YZ'yi dene (hesaba katılmaz)"
+SOURCE_CHOICES = [SRC_DRAW, SRC_PHOTO, SRC_DEMO]
+SOURCE_LABEL = "Çatı engelleri nereden gelsin?"
+PHOTO_FIELDS = ("detection", "vision_error", "roof_note", "roof_preselect", "photo_bytes")
 KEY_BILL_SHOWN = "_bill_shown"
 KEY_PITCHED, KEY_PITCHED_KEEP, KEY_DRAWINGS, KEY_DRAW_MODE = "pitched_type", "_pitched_keep", "_roof_drawings", "draw_mode"
 PITCHED_CHOICES = list(building_mode.PITCHED_TYPE_LABELS_TR.values())
@@ -106,27 +116,32 @@ FACE_STATUS_TR = {
     "kullanilmadi": "alan yok",
 }
 HELP_STEPS = (
-    "1. Haritada bir apartmana tıklayın.\n"
+    "1. Haritada binanıza tıklayın.\n"
     "2. Daire sayısını kontrol edin.\n"
-    "3. Çatı fotoğrafı yükleyin (önerilir).\n"
-    "4. İsteğe bağlı bilgileri girin ve Hesapla'ya basın.\n"
-    "5. Çatı görünümünde engelleri çizerek sonucu netleştirin."
+    "3. Engel kaynağını seçin: haritada çizin (önerilen) veya çatı fotoğrafı yükleyin.\n"
+    "4. Gerekirse çerçeveyi çatıya hizalayın.\n"
+    "5. İsteğe bağlı bilgileri girip Hesapla'ya basın."
 )
 NOT_USED_LAYOUT = "kullanılmadı (panel yerleşimi)"
 NO_FLAT_SECTION = "kullanılmadı (düz bölüm yok)"
-DEMO_NONE = "Seçilmedi"
-PHOTO_STEP_TITLE = "Çatı fotoğrafı yükleyin (önerilir)"
+PHOTO_STEP_TITLE = "Çatı fotoğrafı yükleyin"
 PHOTO_GUIDANCE = (
     "Çatıya ya da terasa çıkıp köşelerden çekin; fotoğraf yalnızca bellekte işlenir, kaydedilmez."
 )
 PHOTO_BENEFIT = "Fotoğraf, ortalama kullanılabilir alan varsayımının yerine geçer ve sonucun güvenini artırır."
-DEMO_DIR = Path(__file__).parent / "data" / "demo_images"
-DEMO_PHOTO_NOTE = (
-    "Bu, uygulamayla birlikte gelen bir örnek fotoğraftır (Pexels / Roboflow, lisans bilgisi altta); seçtiğiniz "
-    "binanın fotoğrafı değildir. YZ'nin çatıda neleri tespit ettiğini göstermek için kullanılır ve hesaba katılmaz. "
-    "Kendi çatınızın fotoğrafını yukarıdaki 'Çatı fotoğrafı yükleyin' adımından ekleyebilirsiniz."
+PHOTO_MODE_CAPTION = "Fotoğraf modunda engeller fotoğraftan alınır; çizmek için 'Haritada çizerek' seçin."
+DEMO_MODE_CAPTION = "Örnek modunda hesap ortalama orana göre yapılır; engel çizmek için 'Haritada çizerek' seçin."
+NO_BUILDING_DRAW_CAPTION = "Çizim yalnızca haritadan seçilen binalar için yapılabilir; ortalama oran kullanılacak."
+RATIO_NO_PANELS_CAPTION = (
+    "Panel yerleşimini görmek için 'Haritada çizerek' seçip engelleri çizin veya 'Engel yok, çatı boş' deyin."
 )
-DEMO_EXPANDER = "Örnek fotoğrafla dene (stok fotoğraf, hesaba katılmaz)"
+DEMO_DIR = Path(__file__).parent / "data" / "demo_images"
+DEMO_SAMPLES = ["roof_03.jpg", "roof_05.jpg", "roof_08.jpg", "roof_10.jpg", "roof_14.jpg"]
+DEMO_LABELS = [f"Örnek {i}" for i in range(1, len(DEMO_SAMPLES) + 1)]
+DEMO_NOT_YOURS = "Bu fotoğraf seçtiğiniz binaya ait değildir; YZ'nin çatıda neleri bulduğunu göstermek içindir."
+DEMO_ANALYZE_LABEL = "YZ ile analiz et"
+DEMO_SPINNER = "Fotoğraf analiz ediliyor (1–2 dakika sürebilir)…"
+DEMO_ROOF_TYPE_TR = {"flat": "düz", "pitched": "eğimli", "mixed": "karma (düz teras + eğimli)"}
 ACCENT = "#e8710a"
 ATTRIBUTION = (
     "© OpenStreetMap katkıcıları · Bina verisi: Overture Maps Foundation (ODbL), Microsoft ML Buildings · "
@@ -443,7 +458,9 @@ def sync_building_inputs(state, building, area):
     state[KEY_PITCHED] = state[KEY_PITCHED_KEEP] = HIP_CHOICE
     state[KEY_DRAWINGS] = drawings.new_state(key)  # drawings belong to one building
     state[KEY_BUILDING] = key
-    state.pop(KEY_PHOTO_STEP, None)  # the photo step starts again for a new building
+    state[KEY_SOURCE] = SRC_DRAW  # the obstacle source starts again for a new building
+    for stale in (KEY_DEMO, KEY_PHOTO, KEY_PHOTO_LIVE, KEY_PHOTO_RESULT):
+        state.pop(stale, None)
     return True
 
 
@@ -516,11 +533,6 @@ def collect_inputs(state, analysis, override=None):
         "n_flats": n, "n_flats_estimated": n == state.get(KEY_FLATS_ESTIMATE),
         "bill": clean_bill(state.get(KEY_BILL, state.get(KEY_BILL_KEEP))), "building": analysis.get("building"),
     }
-
-
-def photo_applies(building, is_demo):
-    """A bundled demo photo never describes a real clicked building; an uploaded photo is assumed to be of it."""
-    return not (building is not None and is_demo)
 
 
 def selected_ids(editor_df):
@@ -760,10 +772,11 @@ def assumption_rows(r, inputs, detection, explanation=None, report=None):
             "Eğimli çatı tipi", building_mode.PITCHED_TYPE_LABELS_TR[r["egimli_tip"]], "Kullanıcı girdisi / varsayılan",
             "Kırma (4 yüz) varsayılandır: pilot bölgede en yaygın eğimli çatı; yüzler bina izinin en küçük dikdörtgeni üzerinde kurulur",
         ))
-    rows.append((
-        "Panel", f"{tr_num(PANEL_LENGTH_M, 2)} × {tr_num(PANEL_WIDTH_M, 2)} m, {tr_num(PANEL_KWP, 2)} kWp", "Varsayım",
-        f"Panel sayısı: {format_range(r['panel_sayisi_aralik'])}; yerleşim çatı görünümünde",
-    ))
+    panel_dims = f"{tr_num(PANEL_LENGTH_M, 2)} × {tr_num(PANEL_WIDTH_M, 2)} m, {tr_num(PANEL_KWP, 2)} kWp"
+    if r["guc_kaynagi"] == "geometri":
+        rows.append(("Panel", panel_dims, "Varsayım", f"Panel sayısı: {format_range(r['panel_sayisi_aralik'])}; yerleşim çatı görünümünde"))
+    else:  # a ratio gives a kWp, not a layout
+        rows.append(("Panel", ratio_panel_text(r), "Varsayım", f"Panel boyutu: {panel_dims}"))
     layout_mode = r["guc_kaynagi"] == "geometri"  # kWp comes from the panel layout (drawn obstacles or "Engel yok")
     if layout_mode:
         rows.append((
@@ -772,6 +785,13 @@ def assumption_rows(r, inputs, detection, explanation=None, report=None):
         ))
     elif r["guc_kaynagi"] == "engel_yok":
         rows.append(("Engeller", "yok", "Kullanıcı girdisi", "Kullanıcı çatının boş olduğunu onayladı (engel oranı 0)"))
+    elif r["guc_kaynagi"] == "fotograf":
+        rows.append((
+            "Engeller", f"fotoğraf analizi, %{tr_num(percent_from_ratio(r['engel_orani']), 1)}", "Ölçüm/veri",
+            "Kendi çatı fotoğrafınızdan YZ ile; kullanılabilir alan = alan × (1 − engel oranı)",
+        ))
+    else:
+        rows.append(("Engeller", "ortalama oran", "Varsayım", "Çizim veya fotoğraf yok: ortalama kullanılabilir alan oranı"))
     if layout_mode:
         rows.append(("Kullanılabilir alan oranı", NOT_USED_LAYOUT, "Kullanıcı girdisi", "Kurulabilir güç panel yerleşiminden gelir"))
     if applied:
@@ -1110,42 +1130,121 @@ def explanation_section(analysis, result, detection):
     st.caption(EXPLANATION_CAPTIONS[explanation["source"]])
 
 
-def _skip_photo():
-    st.session_state[KEY_PHOTO_STEP] = "skip"
+def active_analysis(state, analysis, source):
+    """The stored analysis seen through the active obstacle source.
 
-
-def photo_step(state):
-    """Main-area photo step. Returns (image_bytes or None, filename or None, is_demo, ready).
-
-    ready is True once a photo is uploaded, a demo is tried or the user chose to continue without a photo.
-    A bundled demo is only offered under 'Örnek fotoğrafla dene' and is never applied to a real building.
+    The photo analysis (detection, annotated photo, roof-type suggestion) is kept in `KEY_PHOTO_RESULT` and only
+    joins the calculation while the photo source is selected; every other source sees a photo-less analysis.
     """
-    st.subheader(PHOTO_STEP_TITLE)
+    photo = (state.get(KEY_PHOTO_RESULT) or {}) if source == SRC_PHOTO else {}
+    return {**analysis, **{field: photo.get(field) for field in PHOTO_FIELDS}}
+
+
+def photo_upload(state):
+    """Uploader of the photo source. Returns {"name", "bytes"} of the photo to analyse, or None.
+
+    The photo is kept in the session state (memory only) so it survives a trip to another source; removing it from
+    the uploader while this source is visible forgets it.
+    """
     st.write(PHOTO_GUIDANCE)
     uploaded = st.file_uploader(PHOTO_STEP_TITLE, type=["jpg", "jpeg", "png"], label_visibility="collapsed")
     st.caption(PHOTO_BENEFIT)
-    image_bytes, name, is_demo = None, None, False
     if uploaded is not None:
+        state[KEY_PHOTO_LIVE] = True
         if uploaded.size > MAX_UPLOAD_MB * 1024 * 1024:
             st.error(f"Dosya çok büyük; en fazla {MAX_UPLOAD_MB} MB yükleyebilirsiniz.")
+            state.pop(KEY_PHOTO, None)
         else:
-            image_bytes, name = uploaded.getvalue(), uploaded.name
-    with st.expander(DEMO_EXPANDER):
-        files = sorted(p.name for p in DEMO_DIR.glob("roof_*.jpg"))
-        if files:
-            chosen = st.selectbox("Örnek fotoğraf", [DEMO_NONE, *files])
-            if chosen != DEMO_NONE:
-                st.caption(source_caption(chosen))
-                if image_bytes is None:
-                    image_bytes, name, is_demo = (DEMO_DIR / chosen).read_bytes(), chosen, True
+            state[KEY_PHOTO] = {"name": uploaded.name, "bytes": uploaded.getvalue()}
+    elif state.pop(KEY_PHOTO_LIVE, False):  # the user removed the file from the uploader
+        state.pop(KEY_PHOTO, None)
+    photo = state.get(KEY_PHOTO)
+    if photo is not None and uploaded is None:
+        st.caption(f"Daha önce yüklenen fotoğraf kullanılıyor: {photo['name']}. Yeni bir fotoğraf yükleyebilirsiniz.")
+    return photo
+
+
+def show_demo_result(image_bytes, detection):
+    """Annotated photo, obstacle table and roof-type remark of a sample analysis (display only)."""
+    obstacles = detection["obstacles"]
+    st.image(
+        draw_overlay(image_bytes, detection, {o["id"] for o in obstacles}),
+        caption="Yeşil: çatı sınırı · Kırmızı: YZ'nin bulduğu engeller",
+    )
+    if obstacles:
+        st.dataframe(
+            pd.DataFrame({
+                "No": [o["id"] for o in obstacles],
+                "Engel": [OBSTACLE_LABELS_TR[o["label"]] for o in obstacles],
+                "Güven": [f"%{round(o['confidence'] * 100)}" for o in obstacles],
+            }),
+            hide_index=True, width="stretch",
+        )
+    else:
+        st.write("Çatıda engel tespit edilmedi.")
+    st.write(
+        f"YZ bu fotoğraftaki çatıyı {DEMO_ROOF_TYPE_TR[detection['roof_type']]} olarak değerlendirdi. "
+        "Bu yalnızca bir örnektir; çatı yapısı seçiminizi ve hesabınızı değiştirmez."
+    )
+
+
+def demo_section(state):
+    """Sample photos: shown at once; the Gemini analysis runs only on 'YZ ile analiz et' and is cached per sample.
+
+    Nothing here ever changes an input or a result.
+    """
+    choice = st.radio("Örnek fotoğraf", DEMO_LABELS, index=None, key=KEY_DEMO, horizontal=True)
+    if choice is None:
+        return
+    filename = DEMO_SAMPLES[DEMO_LABELS.index(choice)]
+    try:
+        image_bytes = (DEMO_DIR / filename).read_bytes()
+    except OSError:
+        st.info("Örnek fotoğraf bulunamadı.")
+        return
+    st.image(image_bytes, caption=source_caption(filename))
+    st.caption(f"Dosya: {filename}")
+    st.info(DEMO_NOT_YOURS)
+    cache = state.setdefault(KEY_DEMO_CACHE, {})
+    if st.button(DEMO_ANALYZE_LABEL, key="demo_analyze"):
+        api_key, key_error = resolve_api_key()
+        if api_key is None:
+            cache[filename] = {"error": key_error}
         else:
-            st.info("Örnek fotoğraf bulunamadı.")
-    skipped = state.get(KEY_PHOTO_STEP) == "skip"
-    if image_bytes is None and not skipped:
-        st.button("Fotoğrafsız devam et", on_click=_skip_photo)
-    elif image_bytes is None:
-        st.caption("Fotoğrafsız devam ediliyor: kullanılabilir alan ortalama orana göre tahmin edilecek.")
-    return image_bytes, name, is_demo, image_bytes is not None or skipped
+            with st.spinner(DEMO_SPINNER):
+                try:
+                    cache[filename] = {"detection": detect_roof_objects(image_bytes, api_key)}
+                except VisionError as exc:
+                    cache[filename] = {"error": str(exc)}
+    entry = cache.get(filename)
+    if entry is None:
+        return
+    if "error" in entry:
+        st.warning(entry["error"])
+    else:
+        show_demo_result(image_bytes, entry["detection"])
+
+
+def source_step(state, building):
+    """The one obstacle source ('Çatı engelleri nereden gelsin?'). Returns (source, photo or None).
+
+    Only the selected option's widgets are shown. Only the photo source returns a photo; the other sources'
+    data stays in the state and is ignored by the calculation until their option is selected again.
+    """
+    st.subheader("Engel kaynağı")
+    state.setdefault(KEY_SOURCE, SRC_DRAW)
+    source = st.radio(SOURCE_LABEL, SOURCE_CHOICES, key=KEY_SOURCE)
+    photo = None
+    if source == SRC_PHOTO:
+        photo = photo_upload(state)
+        st.caption(PHOTO_MODE_CAPTION)
+    else:
+        state.pop(KEY_PHOTO_LIVE, None)  # a fresh uploader on return is not a removal
+        if source == SRC_DEMO:
+            demo_section(state)
+        elif building is None:
+            st.caption(NO_BUILDING_DRAW_CAPTION)
+    return source, photo
 
 
 def photo_section(state, applies):
@@ -1157,8 +1256,6 @@ def photo_section(state, applies):
         return None
 
     st.subheader("Fotoğraf analizi")
-    if not applies:
-        st.info(DEMO_PHOTO_NOTE)
     if detection["multiple_buildings"]:
         st.warning("Fotoğrafta birden fazla bina var; sonuç ana çatı için hesaplandı. Mümkünse tek çatıyı kırpın.")
     if detection["image_view"] == "oblique":
@@ -1266,15 +1363,15 @@ def _metric_ring_latlon(coords, offset=(0.0, 0.0)):
 
 
 def roof_label(roof, result):
-    """Label of the drawn scenario. Geometry mode: 'N panel · N×0,40 kWp · …'. Numeric mode: the kWp is not a panel
-    count, so it reads '≈X kWp (<source>; paneller temsilidir) · …' without the count."""
+    """Label of the drawn scenario. Geometry mode: 'N panel · N×0,40 kWp · …'. Ratio modes: the kWp is not a panel
+    count and no panels are drawn, so it reads '≈X kWp (<source>) · …' without the count."""
     sc = roof["scenario"]
     discount = format_range(sc["paylasim"]["indirim_ay_ortalama_tl"], 0)
     tail = f"{tr_num(sc['kwh'])} kWh/yıl · daire başına ~{discount} TL/ay"
     if roof["mode"] == "geometry":
         return f"{drawn_panel_count(roof)} panel · {tr_num(sc['kwp'], 1)} kWp · {tail}"
     source = NUMERIC_LABEL_SOURCE.get(result.get("guc_kaynagi"), NUMERIC_LABEL_SOURCE["ortalama"])
-    return f"≈{tr_num(sc['kwp'], 1)} kWp ({source}; paneller temsilidir) · {tail}"
+    return f"≈{tr_num(sc['kwp'], 1)} kWp ({source}) · {tail}"
 
 
 def drawn_panels(roof):
@@ -1290,9 +1387,10 @@ def drawn_panel_count(roof):
     return sum(len(p) for p in drawn_panels(roof).values())
 
 
-def build_roof_overlay(footprint, setback, draw, roof=None, result=None):
-    """Dynamic layers of the roof map: footprint, setback and user shapes; with a calculated `roof` (after 'Hesapla')
-    also the dropped faces, the panels and the label."""
+def build_roof_overlay(footprint, setback, draw, roof=None, result=None, show_drawings=True):
+    """Dynamic layers of the roof map: footprint, setback and (only for the drawing source) user shapes; with a
+    calculated `roof` (after 'Hesapla') also the dropped faces and the label, and the panels in layout mode ONLY:
+    ratio modes (average / photo) know a kWp, not a layout, so no panel rectangles are drawn."""
     fg = folium.FeatureGroup(name="Çatı")
     off = draw.get("offset", (0.0, 0.0))  # display-only imagery alignment: every overlay moves, the data does not
     for ring in drawings.polygon_to_latlon(footprint, off):
@@ -1310,13 +1408,13 @@ def build_roof_overlay(footprint, setback, draw, roof=None, result=None):
                     ).add_to(fg)
                 for line in layout.hatch_lines(face["polygon"]):
                     folium.PolyLine(_metric_ring_latlon(line.coords, off), color="#374151", weight=1, interactive=False).add_to(fg)
-        for panels in drawn_panels(roof).values():
+        for panels in drawn_panels(roof).values() if roof["mode"] == "geometry" else ():
             for corners in panels:
                 folium.Polygon(
                     _metric_ring_latlon(corners, off), color="#1d4ed8", weight=1, fill=True, fill_color="#3b82f6",
                     fill_opacity=0.75, interactive=False,
                 ).add_to(fg)
-    for shape in drawings.stored_shapes(draw):
+    for shape in drawings.stored_shapes(draw) if show_drawings else ():
         color = "#16a34a" if shape["kind"] == drawings.TERRACE else "#dc2626"
         for ring in drawings.polygon_to_latlon(shape["geom"], off):
             folium.Polygon(ring, color=color, weight=2, fill=True, fill_color=color, fill_opacity=0.3, interactive=False).add_to(fg)
@@ -1395,8 +1493,12 @@ def alignment_control(draw):
     st.caption(ALIGN_CAPTION)
 
 
-def roof_view_section(state, building, roof=None, result=None):
+def roof_view_section(state, building, roof=None, result=None, source=SRC_DRAW):
     """'Çatı görünümü': the one roof map (isolated from the building selection) and the drawing tools.
+
+    The map is always rendered with the same key. Drawing tools, buttons and stored shapes belong to the drawing
+    source only: with another source the toolbar is hidden, the stored drawings are neither rendered nor changed
+    and whatever the map returns is ignored (an empty or missing `all_drawings` is never a deletion).
 
     Rendered in one fixed place above 'Hesapla'. Before 'Hesapla' (`roof` is None) it shows the footprint, the setback
     line and the user's shapes only; drawing and offset changes just update the stored state. After 'Hesapla' it also
@@ -1410,42 +1512,54 @@ def roof_view_section(state, building, roof=None, result=None):
     footprint = shapely.from_wkb(building["footprint_wkb_m"])
     setback = roof["model"]["setback"] if roof is not None else layout.setback_polygon(footprint)
     structure = result["cati_yapisi"] if result is not None else STRUCTURE_FROM_CHOICE.get(state.get(KEY_STRUCTURE))
-    modes = [DRAW_OBSTACLE, DRAW_TERRACE] if structure == "mixed" else [DRAW_OBSTACLE]
-    if state.get(KEY_DRAW_MODE) not in modes:
-        state.pop(KEY_DRAW_MODE, None)  # widget not created yet in this run: safe to reset
-    c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
-    mode_label = c1.radio("Çizim modu", modes, key=KEY_DRAW_MODE, horizontal=True)
-    c2.button("Engelleri temizle", on_click=_clear_drawings, help="Tüm çizimleri (teras dahil) siler.")
-    c3.button("Son çizimi geri al", on_click=_undo_drawing)
-    c4.button("Engel yok, çatı boş", on_click=_confirm_empty)
-    st.caption(
-        "Haritanın solundaki araçlarla dikdörtgen veya çokgen çizin. Engeller kırmızı, teras yeşil gösterilir. "
-        "Çizimleri silmek için 'Engelleri temizle' veya 'Son çizimi geri al' düğmelerini kullanın."
-    )
-    if roof is None:
-        st.caption(ROOF_VIEW_PRE_CAPTION)
+    drawing = source == SRC_DRAW
+    mode_label = DRAW_OBSTACLE
+    if drawing:
+        modes = [DRAW_OBSTACLE, DRAW_TERRACE] if structure == "mixed" else [DRAW_OBSTACLE]
+        if state.get(KEY_DRAW_MODE) not in modes:
+            state.pop(KEY_DRAW_MODE, None)  # widget not created yet in this run: safe to reset
+        c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
+        mode_label = c1.radio("Çizim modu", modes, key=KEY_DRAW_MODE, horizontal=True)
+        c2.button("Engelleri temizle", on_click=_clear_drawings, help="Tüm çizimleri (teras dahil) siler.")
+        c3.button("Son çizimi geri al", on_click=_undo_drawing)
+        c4.button("Engel yok, çatı boş", on_click=_confirm_empty)
+        st.caption(
+            "Haritanın solundaki araçlarla dikdörtgen veya çokgen çizin. Engeller kırmızı, teras yeşil gösterilir. "
+            "Çizimleri silmek için 'Engelleri temizle' veya 'Son çizimi geri al' düğmelerini kullanın."
+        )
+        if roof is None:
+            st.caption(ROOF_VIEW_PRE_CAPTION)
+    else:
+        st.caption(PHOTO_MODE_CAPTION if source == SRC_PHOTO else DEMO_MODE_CAPTION)
     alignment_control(draw)
     for note in (roof["notes"] if roof is not None else []):
-        st.info(note)
+        if note not in (NOTE_AVERAGE, NOTE_PHOTO):  # RATIO_NO_PANELS_CAPTION below replaces them
+            st.info(note)
+    if roof is not None and roof["mode"] != "geometry":
+        st.caption(RATIO_NO_PANELS_CAPTION)
     aligning = bool(draw.get("align_active"))
     data = st_folium(
-        build_roof_map(roof_map_center(draw, building), draw_tools=not aligning), key=drawings.map_key(draw),
+        build_roof_map(roof_map_center(draw, building), draw_tools=drawing and not aligning), key=drawings.map_key(draw),
         returned_objects=["all_drawings", "last_clicked"] if aligning else ["all_drawings"],
-        feature_group_to_add=build_roof_overlay(footprint, setback, draw, roof, result), height=520, use_container_width=True,
+        feature_group_to_add=build_roof_overlay(footprint, setback, draw, roof, result, show_drawings=drawing),
+        height=520, use_container_width=True,
     )
     if aligning:
         if drawings.apply_click(draw, (data or {}).get("last_clicked"), footprint):
             st.rerun()  # once: the mode is off and the map is rebuilt at the new offset
         change = {"changed": False}  # a click never creates, changes or deletes drawings
-    else:
+    elif drawing:
         mode = drawings.TERRACE if mode_label == DRAW_TERRACE else drawings.OBSTACLE
         change = drawings.sync(draw, (data or {}).get("all_drawings"), mode, footprint)
+    else:
+        change = {"changed": False}  # another source is active: the map's drawing output is ignored completely
     if change["changed"]:
         st.rerun()  # once: the cards above and the map key follow the new drawings (a notice waits in the state)
-    notice, draw["notice"] = draw.get("notice"), None
-    if notice:
-        st.warning(notice)
-    st.caption(TRASH_NOTE)
+    if drawing:
+        notice, draw["notice"] = draw.get("notice"), None
+        if notice:
+            st.warning(notice)
+        st.caption(TRASH_NOTE)
     st.caption(ROOF_VIEW_CAPTION)
 
 
@@ -1502,7 +1616,8 @@ def main():
         st.button("Sıfırla", on_click=_reset_clicked, help="Fatura, daire sayısı ve çatı yapısı girdilerini temizler.")
         st.caption(ATTRIBUTION)
 
-    image_bytes, photo_name, is_demo, pressed = None, None, False, False
+    source, photo, pressed = state.get(KEY_SOURCE, SRC_DRAW), None, False
+    image_bytes = None
     roof_slot = None  # the one fixed place of the roof map: above 'Hesapla', filled once per run further down
     area = 150.0
     if point:
@@ -1516,13 +1631,12 @@ def main():
         apply_pending_roof(state)
         ensure_defaults(state, bill_was_shown=state.pop(KEY_BILL_SHOWN, False))
         flats_step(state)
-        image_bytes, photo_name, is_demo, ready = photo_step(state)
-        if ready:
-            optional_inputs_step(state)
+        source, photo = source_step(state, building)
+        image_bytes = photo["bytes"] if photo is not None else None  # only the photo source feeds Gemini on Hesapla
+        optional_inputs_step(state)
         if building is not None:
             roof_slot = st.container()
-        if ready:
-            pressed = st.button("Hesapla", type="primary")
+        pressed = st.button("Hesapla", type="primary")
 
     preselect_rerun = False
     if pressed:
@@ -1549,36 +1663,37 @@ def main():
                                 detection = vision_future.result()
                             except VisionError as exc:
                                 vision_error = str(exc)
-                # A bundled demo photo never describes a real clicked building: show it, do not apply it.
-                applies = photo_applies(building, is_demo)
-                roof_preselect, roof_note = None, None
-                if detection is not None and applies:
-                    roof_preselect, roof_note = photo_roof_choice(detection)
+                roof_preselect, roof_note = photo_roof_choice(detection) if detection is not None else (None, None)
+                if source == SRC_PHOTO:  # the photo analysis is replaced only while the photo source is active
+                    if image_bytes is not None:
+                        state[KEY_PHOTO_RESULT] = {
+                            "detection": detection, "vision_error": vision_error, "roof_note": roof_note,
+                            "roof_preselect": roof_preselect, "photo_bytes": image_bytes if detection else None,
+                        }
+                    else:
+                        state.pop(KEY_PHOTO_RESULT, None)
                 analysis = {
                     **bundle,
-                    "detection": detection,
-                    "vision_error": vision_error,
                     "key_error": key_error,
-                    "roof_note": roof_note,
-                    "roof_preselect": roof_preselect,
-                    "photo_bytes": image_bytes if detection else None,
                     "building": building,
                     "inputs": {
                         "lat": point[0], "lon": point[1],
                         "area": building["area_m2"] if building else area,
                         "usable_base_area_m2": building["setback_area_m2"] if building else None,
-                        "photo_applies": applies,
-                        "demo_photo": bool(detection) and is_demo,
+                        "photo_applies": True,
+                        "demo_photo": False,
                         **footprint_inputs,
                     },
                 }
                 state["analysis"] = analysis
-                inputs = collect_inputs(state, analysis, override=roof_preselect)
+                view = active_analysis(state, analysis, source)
+                inputs = collect_inputs(state, view, override=roof_preselect)
                 all_ids = {o["id"] for o in detection["obstacles"]} if detection else set()
-                first, _, _ = evaluate(analysis, inputs, detection, all_ids, drawing_state(state, building))
+                active_draw = drawing_state(state, building) if source == SRC_DRAW else None
+                first, _, _ = evaluate(view, inputs, detection, all_ids, active_draw)
                 eff = explained_detection(detection, all_ids, inputs)
                 with st.spinner("YZ açıklaması hazırlanıyor…"):
-                    state["explanation"] = generate_explanation(first, eff, bool(inputs["demo_photo"] and eff), api_key)
+                    state["explanation"] = generate_explanation(first, eff, False, api_key)
                 if roof_preselect is not None and roof_preselect != (state.get(KEY_STRUCTURE), state.get(KEY_SHARE)):
                     state[KEY_PENDING_ROOF] = roof_preselect  # widgets exist already: apply on the next run
                     preselect_rerun = True
@@ -1596,8 +1711,9 @@ def main():
     analysis = state.get("analysis")
     if not analysis and roof_slot is not None:
         with roof_slot:  # before 'Hesapla': imagery, outline, alignment and drawing tools only; no evaluation
-            roof_view_section(state, building)
+            roof_view_section(state, building, source=source)
     if analysis:
+        analysis = active_analysis(state, analysis, source)  # a photo analysis counts only for the photo source
         detection = analysis["detection"]
         applies = analysis["inputs"]["photo_applies"]
         st.markdown("---")
@@ -1605,8 +1721,10 @@ def main():
         if analysis.get("roof_preselect"):
             st.caption("Çatı yapısı fotoğraf analizine göre seçildi; kenar çubuğundan değiştirebilirsiniz.")
         ids = photo_section(analysis, applies)
-        draw = drawing_state(state, inputs["building"])
-        result, _ratio, roof = evaluate(analysis, inputs, detection, ids or set(), draw)
+        draw = drawing_state(state, inputs["building"])  # alignment offset lives here whatever the source is
+        result, _ratio, roof = evaluate(
+            analysis, inputs, detection, ids or set(), draw if source == SRC_DRAW else None
+        )
         state["result"] = result
         if detection is not None:
             st.image(
@@ -1621,7 +1739,7 @@ def main():
         show_cards(result, inputs, eff_detection is not None, inputs["building"])
         if roof is not None:
             with roof_slot:
-                roof_view_section(state, inputs["building"], roof, result)
+                roof_view_section(state, inputs["building"], roof, result, source=source)
         else:
             st.caption("Çatı görünümü yalnızca haritadan seçilen binalar için gösterilir (bina izi gerekir).")
         explanation_section(analysis, result, eff_detection)

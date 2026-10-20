@@ -31,6 +31,11 @@ _RATIO_NOTE = {
 }
 
 
+def ratio_panel_text(r):
+    """Panel count of a ratio result (average / photo / 'Engel yok' without a layout): an estimate, not a layout."""
+    return f"≈{_span(r['panel_sayisi_aralik'])} panel (orandan tahmini; yerleşim için engelleri çizin)"
+
+
 def _n(value, decimals=0):
     return tr_num(value, decimals)
 
@@ -224,7 +229,8 @@ def report_markdown(r, assumptions=(), offset=None):
         "",
         "## Özet",
         "",
-        f"- Panel sayısı: {_span(r['panel_sayisi_aralik'])}",
+        f"- Panel sayısı: {_span(r['panel_sayisi_aralik'])}" if r.get("guc_kaynagi") == "geometri"
+        else f"- Panel: {ratio_panel_text(r)}",
         f"- Kurulabilir güç: {_span(r['kurulabilir_guc_kwp_aralik'], 1, 'kWp')}",
         f"- Yıllık üretim: {_span(r['yillik_uretim_kwh_aralik'], 0, 'kWh')}",
         f"- CO₂ azaltımı: {_span(r['co2_ton_yil_aralik'], 1, 'ton/yıl')}",

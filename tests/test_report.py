@@ -145,7 +145,7 @@ def test_report_contains_the_main_numbers_and_notes():
     for text in (
         "## Hesap dökümü", "## Varsayımlar ve kaynaklar", building_mode.LEGAL_NOTE, report.IMAGERY_NOTE,
         f"{tr_num(r['kurulabilir_guc_kwp_aralik'][0], 1)} kWp", f"{tr_num(r['yillik_uretim_kwh_aralik'][0])} kWh",
-        f"{tr_num(r['toplam_maliyet_tl_aralik'][0])}", f"Panel sayısı: {r['panel_sayisi_aralik'][0]}",
+        f"{tr_num(r['toplam_maliyet_tl_aralik'][0])}", f"≈{r['panel_sayisi_aralik'][0]} panel (orandan tahmini; yerleşim için engelleri çizin)",
         "Kırma (4 yüz)", r["guven_seviyesi"], "re.jrc.ec.europa.eu/api/v5_3/PVcalc",
     ):
         assert text in md, text
