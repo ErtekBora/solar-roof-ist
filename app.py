@@ -82,6 +82,9 @@ ALIGN_CLICK_CAPTION = "Uydu görüntüsünde çatının ortasına bir kez tıkla
 ROOF_VIEW_PRE_CAPTION = (
     "Çatı fotoğrafınız yoksa uydu görüntüsüne bakarak çerçeveyi hizalayın ve engelleri şimdi çizebilirsiniz."
 )
+ALIGN_APPROX_CAPTION = (
+    "Çerçeve çatıyla birebir örtüşmeyebilir (bina izi zemindeki sınırdır); çerçeveyi çatının ortasına getirmeniz yeterli."
+)
 ALIGN_CAPTION = (
     "Yüksek binalarda uydu görüntüsü çatıyı yana kaymış gösterir. Beyaz çerçeveyi görüntüdeki çatının üstüne getirin, "
     "engelleri sonra çizin. Hesap yine bina izi (OpenStreetMap) üzerinden yapılır."
@@ -1334,12 +1337,21 @@ def _reset_clicked():
 
 # ---------------------------------------------------------------- roof view
 
-def build_roof_map(center, draw_tools=True):
+CROSSHAIR_CSS = "<style>.leaflet-container {cursor: crosshair !important;}</style>"
+
+
+def build_roof_map(center, draw_tools=True, aligning=False):
     """Static part of the roof map: Esri World Imagery (DISPLAY ONLY, attribution kept) and the Draw control
     (rectangle and polygon only; editing off, deleting on). `draw_tools=False` (click-to-align mode) omits the
-    toolbar so an alignment click can never add a vertex."""
+    toolbar so an alignment click can never add a vertex. `aligning` also turns off dragging, double-click zoom, box
+    zoom and keyboard panning (a click must never become a pan) and shows a crosshair; they return when it ends."""
     # no scroll-wheel zoom: page scrolling must not be hijacked (the +/- buttons stay)
-    m = folium.Map(location=center, zoom_start=ROOF_VIEW_ZOOM, max_zoom=21, tiles=None, scroll_wheel_zoom=False)
+    m = folium.Map(
+        location=center, zoom_start=ROOF_VIEW_ZOOM, max_zoom=21, tiles=None, scroll_wheel_zoom=False,
+        dragging=not aligning, double_click_zoom=not aligning, box_zoom=not aligning, keyboard=not aligning,
+    )
+    if aligning:
+        m.get_root().html.add_child(folium.Element(CROSSHAIR_CSS))
     folium.TileLayer(
         tiles=ESRI_TILES_URL, attr=ESRI_ATTRIBUTION, name="Uydu (yalnızca görüntüleme)", max_native_zoom=19, max_zoom=21,
     ).add_to(m)
@@ -1462,17 +1474,6 @@ def _cancel_align():
     drawings.cancel_align(st.session_state[KEY_DRAWINGS])
 
 
-def roof_map_center(draw, building):
-    """Map centre: the building centroid moved by the alignment offset (metric shift, then back to lat/lon)."""
-    off = draw.get("offset", (0.0, 0.0))
-    if off == (0.0, 0.0):
-        return list(building["centroid"])
-    lat, lon = building["centroid"]
-    x, y = drawings.to_metric(lon, lat)
-    lon2, lat2 = drawings.to_wgs84(x + off[0], y + off[1])
-    return [float(lat2), float(lon2)]
-
-
 def alignment_control(draw):
     """'Çerçeveyi çatıya hizala': click-to-align, arrow buttons (1 m and 5 m per click), reset and the current offset.
     Display only."""
@@ -1491,6 +1492,7 @@ def alignment_control(draw):
             cols[4].button("Sıfırla", key="align_reset", on_click=_reset_offset)
             cols[5].markdown(drawings.offset_text(draw["offset"]))
     st.caption(ALIGN_CAPTION)
+    st.caption(ALIGN_APPROX_CAPTION)
 
 
 def roof_view_section(state, building, roof=None, result=None, source=SRC_DRAW):
@@ -1530,7 +1532,8 @@ def roof_view_section(state, building, roof=None, result=None, source=SRC_DRAW):
         if roof is None:
             st.caption(ROOF_VIEW_PRE_CAPTION)
     else:
-        st.caption(PHOTO_MODE_CAPTION if source == SRC_PHOTO else DEMO_MODE_CAPTION)
+        if source == SRC_DEMO:  # the photo-mode caption is already shown once, under the uploader
+            st.caption(DEMO_MODE_CAPTION)
     alignment_control(draw)
     for note in (roof["notes"] if roof is not None else []):
         if note not in (NOTE_AVERAGE, NOTE_PHOTO):  # RATIO_NO_PANELS_CAPTION below replaces them
@@ -1539,7 +1542,7 @@ def roof_view_section(state, building, roof=None, result=None, source=SRC_DRAW):
         st.caption(RATIO_NO_PANELS_CAPTION)
     aligning = bool(draw.get("align_active"))
     data = st_folium(
-        build_roof_map(roof_map_center(draw, building), draw_tools=drawing and not aligning), key=drawings.map_key(draw),
+        build_roof_map(list(building["centroid"]), draw_tools=drawing and not aligning, aligning=aligning), key=drawings.map_key(draw),
         returned_objects=["all_drawings", "last_clicked"] if aligning else ["all_drawings"],
         feature_group_to_add=build_roof_overlay(footprint, setback, draw, roof, result, show_drawings=drawing),
         height=520, use_container_width=True,

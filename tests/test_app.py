@@ -1693,3 +1693,43 @@ def test_exactly_one_roof_map_per_run_and_it_sits_above_hesapla(mocked, roof_fig
     calls.clear()
     at.run()
     assert len(_roof_map_calls(calls)) == 1
+
+
+# ------------------------------------------------------------- alignment UX: fixed view, locked map while aligning
+
+def test_offset_change_keeps_the_map_centre_on_the_original_footprint(mocked, roof_figs, sample_index, building_point):
+    calls, box, figs = roof_figs
+    at = _run_with_point(building_point)
+    original = figs[-1][0].location
+    centroid = list(_roof_inputs(sample_index, building_point)["building"]["centroid"])
+    assert original == pytest.approx(centroid)
+    zoom = figs[-1][0].options["zoom"]
+    for label in ("→", "5 m ↑", "5 m →"):
+        _button(at, label).click().run()
+        assert figs[-1][0].location == pytest.approx(original) and figs[-1][0].options["zoom"] == zoom
+    assert _roof_draw(at)["offset"] != (0.0, 0.0)
+    assert all("center" not in k["returned_objects"] and "zoom" not in k["returned_objects"] for _, k in figs)
+
+
+def test_align_mode_locks_the_map_and_restores_it(mocked, roof_figs, building_point):
+    calls, box, figs = roof_figs
+    at = _run_with_point(building_point)
+    free = figs[-1][0]
+    assert all(free.options[o] is True for o in ("dragging", "double_click_zoom", "box_zoom", "keyboard"))
+    assert "crosshair" not in free.get_root().render()
+    _button(at, "Çatıya tıklayarak hizala").click().run()
+    locked = figs[-1][0]
+    assert all(locked.options[o] is False for o in ("dragging", "double_click_zoom", "box_zoom", "keyboard"))
+    assert "cursor: crosshair" in locked.get_root().render()
+    _button(at, "İptal").click().run()
+    back = figs[-1][0]
+    assert all(back.options[o] is True for o in ("dragging", "double_click_zoom", "box_zoom", "keyboard"))
+    assert "crosshair" not in back.get_root().render()
+
+
+def test_alignment_caption_and_single_photo_mode_caption(mocked, building_point):
+    at = _run_with_point(building_point)
+    assert app.ALIGN_APPROX_CAPTION in [c.value for c in at.caption]
+    assert app.ALIGN_APPROX_CAPTION.startswith("Çerçeve çatıyla birebir örtüşmeyebilir")
+    at = _run_photo("roof_10.jpg", building_point)
+    assert [c.value for c in at.caption].count(app.PHOTO_MODE_CAPTION) == 1
