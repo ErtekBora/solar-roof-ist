@@ -13,6 +13,15 @@ from test_app import (  # noqa: F401  (fixtures and helpers shared with the app 
 SOURCE = app.SOURCE_LABEL
 
 
+def _align_controls(at):
+    """Alignment widgets and captions anywhere on the page."""
+    labels = {"Çatıya tıklayarak hizala", "İptal", "↑", "↓", "←", "→", "5 m ↑", "5 m →"}
+    texts = {app.ALIGN_CAPTION, app.ALIGN_APPROX_CAPTION, app.ALIGN_CLICK_CAPTION}
+    return [b.label for b in at.button if b.label in labels] + [c.value for c in at.caption if c.value in texts] + [
+        e.label for e in at.expander if e.label == app.ALIGN_EXPANDER_LABEL
+    ]
+
+
 def _select(at, source):
     _widget(at.radio, SOURCE).set_value(source).run()
     assert not at.exception
@@ -173,7 +182,7 @@ def test_photo_mode_uses_the_photo_ratio_and_hides_the_drawing_tools(
 
     assert not _has_draw_toolbar(figs[-1][0]) and app.PHOTO_MODE_CAPTION in [c.value for c in at.caption]
     assert not [b for b in at.button if b.label in ("Engelleri temizle", "Son çizimi geri al")]
-    assert [b for b in at.button if b.label == "Çatıya tıklayarak hizala"]  # alignment stays (display only)
+    assert not _align_controls(at)
     _button(at, "Hesapla").click().run()
     r = at.session_state["result"]
     assert r["guc_kaynagi"] == "fotograf" and 0 < spy_capacity[-1]["obstacle_ratio"] < 0.95
@@ -199,7 +208,7 @@ def test_the_selector_offers_exactly_the_five_curated_samples(mocked, images, bu
         "Örnek 6 – Karma (teras + eğimli, yeni bina)", "Örnek 7 – Karma (teras + eğimli, eski bina)",
         "Örnek 8 – Gerçek fotoğraf",
     ]
-    assert app.DEMO_SAMPLES == [f"synth_0{i}.jpg" for i in range(1, 8)] + ["roof_03.jpg"]
+    assert app.DEMO_SAMPLES == [f"synth_0{i}.jpg" for i in range(1, 8)] + ["roof_05.jpg"]
     assert radio.value is None  # nothing selected by default
     assert not images
 
@@ -212,7 +221,11 @@ def test_selecting_a_sample_shows_the_photo_at_once_without_a_gemini_call(mocked
     assert len(images) == 1 and images[0] is None  # the synthetic caption is a st.caption, not an image caption
     captions = [c.value for c in at.caption]
     assert "Dosya: synth_04.jpg" in captions and app.SYNTH_CAPTION in captions
-    assert app.DEMO_NOT_YOURS in [i.value for i in at.info]
+    assert app.DEMO_NOT_YOURS not in [i.value for i in at.info]  # a synthetic sample only carries its own caption
+    assert [c.value for c in at.caption].count(app.SYNTH_CAPTION) == 1
+    _widget(at.radio, "Örnek fotoğraf").set_value(app.DEMO_LABELS[7]).run()  # the real photo keeps the extra line
+    assert app.DEMO_NOT_YOURS in [i.value for i in at.info] and app.SYNTH_CAPTION not in [c.value for c in at.caption]
+    _widget(at.radio, "Örnek fotoğraf").set_value(app.DEMO_LABELS[3]).run()
     assert [b for b in at.button if b.label == "YZ ile analiz et"]
 
 
@@ -338,8 +351,93 @@ def test_every_sample_has_a_clean_caption_and_synthetic_ones_say_so(mocked, imag
             assert "Sentetik" in " ".join(m.value for m in at.markdown)
             assert images[0] is None
         else:
-            assert images[0].endswith("https://www.pexels.com/tr-tr/@drector/") and "Pexels License" in images[0]
+            assert images[0].endswith("Lisans: Pexels License") and "TODO" not in images[0]
     assert app.SYNTH_CAPTION == (
         "YZ ile üretilmiş sentetik örnek (Google Gemini görüntü modeli, 21.10.2026). Gerçek bir bina değildir; "
         "YZ'nin çatıda neleri bulduğunu göstermek içindir."
+    )
+
+
+# ------------------------------------------------------------- alignment visibility
+
+def _offset_caption(at):
+    return [c.value for c in at.caption if c.value.startswith("Kaydırma:")]
+
+
+def test_no_alignment_controls_in_the_photo_and_sample_sources(mocked, building_point):
+    at = _run_with_point(building_point)
+    assert app.ALIGN_EXPANDER_LABEL in _align_controls(at)
+    for source in (app.SRC_PHOTO, app.SRC_DEMO):
+        _select(at, source)
+        assert _align_controls(at) == [], source
+
+
+def test_drawing_source_has_a_collapsed_expander_with_a_constant_label(mocked, building_point):
+    at = _run_with_point(building_point)
+    [exp] = [e for e in at.expander if e.label == "Çerçeveyi çatıya hizala (yüksek binalarda gerekir)"]
+    assert exp.proto.expanded is False
+    inside = [b.label for b in exp.button]
+    assert "Çatıya tıklayarak hizala" in inside and "↑" in inside and "5 m →" in inside and "Sıfırla" in inside
+    assert app.ALIGN_CAPTION in [c.value for c in exp.caption] and app.ALIGN_APPROX_CAPTION in [c.value for c in exp.caption]
+    assert not _offset_caption(at)  # no line at a zero offset
+    _button(at, "→").click().run()
+    _button(at, "5 m ↑").click().run()
+    assert _offset_caption(at) == ["Kaydırma: 1 m D, 5 m K"]
+    [again] = [e for e in at.expander if e.label.startswith("Çerçeveyi çatıya hizala")]
+    assert again.label == exp.label and again.proto.expanded is False  # the label never changes
+    assert _offset_caption(at) and all(c.value not in _offset_caption(at) for c in again.caption)  # the line is outside
+    _button(at, "Sıfırla").click().run()
+    assert not _offset_caption(at)
+
+
+def test_click_to_align_shows_caption_and_cancel_outside_the_expander(mocked, roof_figs, sample_index, building_point):
+    from test_app import _click_at
+
+    calls, box, figs = roof_figs
+    at = _run_with_point(building_point)
+    _button(at, "Çatıya tıklayarak hizala").click().run()
+    [exp] = [e for e in at.expander if e.label == app.ALIGN_EXPANDER_LABEL]
+    assert app.ALIGN_CLICK_CAPTION in [c.value for c in at.caption]
+    assert app.ALIGN_CLICK_CAPTION not in [c.value for c in exp.caption]
+    assert "İptal" in [b.label for b in at.button] and "İptal" not in [b.label for b in exp.button]
+    assert [b.label for b in exp.button].count("Çatıya tıklayarak hizala") == 0
+    box["roof"] = {"all_drawings": None, "last_clicked": _click_at(_roof_inputs(sample_index, building_point), 6.0, -3.0)}
+    at.run()
+    assert _roof_draw(at)["offset"] == (6.0, -3.0) and not _roof_draw(at).get("align_active")
+    assert "İptal" not in [b.label for b in at.button] and _offset_caption(at) == ["Kaydırma: 6 m D, 3 m G"]
+
+
+def test_the_stored_offset_still_moves_the_overlays_in_photo_and_sample_modes(mocked, roof_figs, building_point):
+    from test_app import _has_draw_toolbar
+
+    calls, box, figs = roof_figs
+    at = _run_with_point(building_point)
+    _button(at, "5 m →").click().run()
+    assert _roof_draw(at)["offset"] == (5.0, 0.0)
+    drawn = [c for c in figs[-1][1]["feature_group_to_add"]._children.values() if isinstance(c, folium.Polygon)]
+    for source in (app.SRC_PHOTO, app.SRC_DEMO):
+        _select(at, source)
+        fig, kwargs = figs[-1]
+        shifted = [c for c in kwargs["feature_group_to_add"]._children.values() if isinstance(c, folium.Polygon)]
+        assert len(shifted) == len(drawn) and shifted[0].locations == drawn[0].locations  # same displaced footprint
+        assert not _has_draw_toolbar(fig) and _roof_draw(at)["offset"] == (5.0, 0.0)
+        assert not _offset_caption(at)
+
+
+def test_a_click_to_align_started_in_the_drawing_source_does_not_lock_the_map_elsewhere(mocked, roof_figs, building_point):
+    calls, box, figs = roof_figs
+    at = _run_with_point(building_point)
+    _button(at, "Çatıya tıklayarak hizala").click().run()
+    _select(at, app.SRC_PHOTO)
+    assert figs[-1][0].options["dragging"] is True and "İptal" not in [b.label for b in at.button]
+
+
+def test_example_8_is_roof_05_with_its_original_sources_entry(mocked, images, building_point):
+    assert app.DEMO_SAMPLES[7] == "roof_05.jpg" and app.DEMO_LABELS[7] == "Örnek 8 – Gerçek fotoğraf"
+    at = _select(_run_with_point(building_point), app.SRC_DEMO)
+    _widget(at.radio, "Örnek fotoğraf").set_value(app.DEMO_LABELS[7]).run()
+    assert "Dosya: roof_05.jpg" in [c.value for c in at.caption]
+    assert images[-1] == (
+        "Kaynak: Pexels (İstanbul apartmanları, turuncu kırma kiremit çatı kırpılmış) · Yazar: Dmitry Limonov · "
+        "Lisans: Pexels License"
     )

@@ -82,6 +82,7 @@ ALIGN_CLICK_CAPTION = "Uydu görüntüsünde çatının ortasına bir kez tıkla
 ROOF_VIEW_PRE_CAPTION = (
     "Çatı fotoğrafınız yoksa uydu görüntüsüne bakarak çerçeveyi hizalayın ve engelleri şimdi çizebilirsiniz."
 )
+ALIGN_EXPANDER_LABEL = "Çerçeveyi çatıya hizala (yüksek binalarda gerekir)"  # fixed: a changing label would collapse it
 ALIGN_APPROX_CAPTION = (
     "Çerçeve çatıyla birebir örtüşmeyebilir (bina izi zemindeki sınırdır); çerçeveyi çatının ortasına getirmeniz yeterli."
 )
@@ -147,7 +148,7 @@ DEMO_SAMPLE_TITLES = [
     ("synth_05.jpg", "Kırma çatı"),
     ("synth_06.jpg", "Karma (teras + eğimli, yeni bina)"),
     ("synth_07.jpg", "Karma (teras + eğimli, eski bina)"),
-    ("roof_03.jpg", "Gerçek fotoğraf"),
+    ("roof_05.jpg", "Gerçek fotoğraf"),
 ]
 DEMO_SAMPLES = [name for name, _ in DEMO_SAMPLE_TITLES]
 DEMO_LABELS = [f"Örnek {i} – {title}" for i, (_, title) in enumerate(DEMO_SAMPLE_TITLES, start=1)]
@@ -1223,10 +1224,11 @@ def demo_section(state):
         st.image(image_bytes)
         st.badge("Sentetik", color="orange")
         st.caption(SYNTH_CAPTION)
+        st.caption(f"Dosya: {filename}")
     else:
         st.image(image_bytes, caption=source_caption(filename))
-    st.caption(f"Dosya: {filename}")
-    st.info(DEMO_NOT_YOURS)
+        st.caption(f"Dosya: {filename}")
+        st.info(DEMO_NOT_YOURS)
     cache = state.setdefault(KEY_DEMO_CACHE, {})
     if st.button(DEMO_ANALYZE_LABEL, key="demo_analyze"):
         api_key, key_error = resolve_api_key()
@@ -1496,11 +1498,7 @@ def _cancel_align():
 def alignment_control(draw):
     """'Çerçeveyi çatıya hizala': click-to-align, arrow buttons (1 m and 5 m per click), reset and the current offset.
     Display only."""
-    st.markdown("**Çerçeveyi çatıya hizala**")
-    if draw.get("align_active"):
-        st.button(ALIGN_CANCEL_LABEL, key="align_cancel", on_click=_cancel_align)
-        st.caption(ALIGN_CLICK_CAPTION)
-    else:
+    if not draw.get("align_active"):  # while active, 'İptal' and its caption live outside the expander
         st.button(ALIGN_CLICK_LABEL, key="align_click", on_click=_start_align)
     for step, prefix in ((drawings.OFFSET_STEP_M, ""), (drawings.OFFSET_STEP_BIG_M, "5 m ")):
         cols = st.columns([1, 1, 1, 1, 1, 3])
@@ -1509,7 +1507,6 @@ def alignment_control(draw):
             col.button(f"{prefix}{arrow}", key=f"align{prefix.strip()}_{arrow}", on_click=_move_offset, args=delta)
         if not prefix:
             cols[4].button("Sıfırla", key="align_reset", on_click=_reset_offset)
-            cols[5].markdown(drawings.offset_text(draw["offset"]))
     st.caption(ALIGN_CAPTION)
     st.caption(ALIGN_APPROX_CAPTION)
 
@@ -1553,13 +1550,20 @@ def roof_view_section(state, building, roof=None, result=None, source=SRC_DRAW):
     else:
         if source == SRC_DEMO:  # the photo-mode caption is already shown once, under the uploader
             st.caption(DEMO_MODE_CAPTION)
-    alignment_control(draw)
+    if drawing:  # alignment belongs to the drawing source; the stored offset still moves the overlays elsewhere
+        if tuple(draw["offset"]) != (0.0, 0.0):
+            st.caption(drawings.offset_text(draw["offset"]))  # outside the expander: its label never changes
+        with st.expander(ALIGN_EXPANDER_LABEL, expanded=False):
+            alignment_control(draw)
     for note in (roof["notes"] if roof is not None else []):
         if note not in (NOTE_AVERAGE, NOTE_PHOTO):  # RATIO_NO_PANELS_CAPTION below replaces them
             st.info(note)
     if roof is not None and roof["mode"] != "geometry":
         st.caption(RATIO_NO_PANELS_CAPTION)
-    aligning = bool(draw.get("align_active"))
+    aligning = drawing and bool(draw.get("align_active"))
+    if aligning:  # always reachable, even when the expander is collapsed
+        st.caption(ALIGN_CLICK_CAPTION)
+        st.button(ALIGN_CANCEL_LABEL, key="align_cancel", on_click=_cancel_align)
     data = st_folium(
         build_roof_map(list(building["centroid"]), draw_tools=drawing and not aligning, aligning=aligning), key=drawings.map_key(draw),
         returned_objects=["all_drawings", "last_clicked"] if aligning else ["all_drawings"],

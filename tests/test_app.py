@@ -1737,11 +1737,23 @@ def test_alignment_caption_and_single_photo_mode_caption(mocked, building_point)
 
 def test_no_sample_caption_contains_a_placeholder():
     sources = (app.DEMO_DIR / "SOURCES.md").read_text(encoding="utf-8")
-    for name in app.DEMO_SAMPLES + ["roof_05.jpg", "roof_08.jpg", "roof_10.jpg", "roof_14.jpg"]:
+    for name in app.DEMO_SAMPLES + ["roof_03.jpg", "roof_08.jpg", "roof_10.jpg", "roof_14.jpg"]:
         caption = app.source_caption(name)
         assert "Lisans:" in caption and "eklenecek" not in caption and "TODO" not in caption, name
-    assert app.source_caption("roof_03.jpg").endswith("https://www.pexels.com/tr-tr/@drector/")  # a real URL is shown
+    assert app.DEMO_SAMPLES[-1] == "roof_05.jpg"
+    assert app.source_caption("roof_05.jpg") == (
+        "Kaynak: Pexels (İstanbul apartmanları, turuncu kırma kiremit çatı kırpılmış) · Yazar: Dmitry Limonov · "
+        "Lisans: Pexels License"  # no link in its metadata, so none is shown
+    )
     assert app.source_caption("roof_14.jpg").endswith("Lisans: Pexels License")
+    # the roof_05 entry is exactly the one from before the synthetic-photo commit; roof_03 is no longer listed
+    assert (
+        "| roof_05.jpg | Pexels (İstanbul apartmanları, turuncu kırma kiremit çatı kırpılmış) | Dmitry Limonov | "
+        "Pexels License | TODO: Pexels sayfa linki |"
+    ) in sources
+    assert "| roof_03.jpg |" in sources and "Pexels License | Demo listesinde kullanılmıyor |" in next(
+        line for line in sources.splitlines() if line.startswith("| roof_03.jpg |")
+    )
     for n in (5, 8, 10, 14):
         assert f"| roof_{n:02d}.jpg |" in sources
     for i in range(1, 8):
