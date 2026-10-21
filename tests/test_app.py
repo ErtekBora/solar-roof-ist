@@ -597,7 +597,7 @@ def test_parse_sources_and_caption():
     info = app.parse_sources()["roof_10.jpg"]
     assert info["license"] == "Pexels License"
     assert "Pexels License" in app.source_caption("roof_10.jpg")
-    assert "kaynak bağlantısı eklenecek" in app.source_caption("roof_10.jpg")  # SOURCES.md link is a TODO
+    assert app.source_caption("roof_10.jpg").endswith("Lisans: Pexels License")  # no real URL: ends after the licence
     assert "https://" in app.source_caption("roof_01.jpg")
 
 
@@ -1733,3 +1733,11 @@ def test_alignment_caption_and_single_photo_mode_caption(mocked, building_point)
     assert app.ALIGN_APPROX_CAPTION.startswith("Çerçeve çatıyla birebir örtüşmeyebilir")
     at = _run_photo("roof_10.jpg", building_point)
     assert [c.value for c in at.caption].count(app.PHOTO_MODE_CAPTION) == 1
+
+
+def test_no_sample_caption_contains_a_placeholder():
+    for name in app.DEMO_SAMPLES:
+        caption = app.source_caption(name)
+        assert "Lisans:" in caption and "eklenecek" not in caption and "TODO" not in caption, name
+    assert app.source_caption("roof_03.jpg").endswith("https://www.pexels.com/tr-tr/@drector/")  # a real URL is shown
+    assert app.source_caption("roof_14.jpg").endswith("Lisans: Pexels License")

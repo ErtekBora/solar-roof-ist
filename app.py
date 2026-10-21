@@ -659,8 +659,8 @@ def source_caption(filename):
     info = parse_sources().get(filename)
     if not info:
         return "Kaynak bilgisi bulunamadı."
-    link = info["link"] if info["link"].startswith("http") else "kaynak bağlantısı eklenecek"
-    return f"Kaynak: {info['source']} · Yazar: {info['author']} · Lisans: {info['license']} · {link}"
+    text = f"Kaynak: {info['source']} · Yazar: {info['author']} · Lisans: {info['license']}"
+    return f"{text} · {info['link']}" if info["link"].startswith("http") else text  # no placeholder without a real URL
 
 
 # ------------------------------------------------------------ building text
