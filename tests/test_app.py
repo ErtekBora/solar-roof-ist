@@ -1736,8 +1736,15 @@ def test_alignment_caption_and_single_photo_mode_caption(mocked, building_point)
 
 
 def test_no_sample_caption_contains_a_placeholder():
-    for name in app.DEMO_SAMPLES:
+    sources = (app.DEMO_DIR / "SOURCES.md").read_text(encoding="utf-8")
+    for name in app.DEMO_SAMPLES + ["roof_05.jpg", "roof_08.jpg", "roof_10.jpg", "roof_14.jpg"]:
         caption = app.source_caption(name)
         assert "Lisans:" in caption and "eklenecek" not in caption and "TODO" not in caption, name
     assert app.source_caption("roof_03.jpg").endswith("https://www.pexels.com/tr-tr/@drector/")  # a real URL is shown
     assert app.source_caption("roof_14.jpg").endswith("Lisans: Pexels License")
+    for n in (5, 8, 10, 14):
+        assert f"| roof_{n:02d}.jpg |" in sources
+    for i in range(1, 8):
+        row = next(line for line in sources.splitlines() if line.startswith(f"| synth_0{i}.jpg |"))
+        assert "Google Gemini görüntü modeli, 2026-10-21" in row and "gerçek bir binayı göstermez" in row
+        assert "Erenköy–Suadiye konut dokusuna benzetilerek üretildi" in row

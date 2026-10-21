@@ -139,8 +139,22 @@ RATIO_NO_PANELS_CAPTION = (
     "Panel yerleşimini görmek için 'Haritada çizerek' seçip engelleri çizin veya 'Engel yok, çatı boş' deyin."
 )
 DEMO_DIR = Path(__file__).parent / "data" / "demo_images"
-DEMO_SAMPLES = ["roof_03.jpg", "roof_05.jpg", "roof_08.jpg", "roof_10.jpg", "roof_14.jpg"]
-DEMO_LABELS = [f"Örnek {i}" for i in range(1, len(DEMO_SAMPLES) + 1)]
+DEMO_SAMPLE_TITLES = [
+    ("synth_01.jpg", "Düz teras, çok engelli (eski bina)"),
+    ("synth_02.jpg", "Düz teras, çok engelli (yeni bina)"),
+    ("synth_03.jpg", "Düz teras, az engelli"),
+    ("synth_04.jpg", "Beşik çatı"),
+    ("synth_05.jpg", "Kırma çatı"),
+    ("synth_06.jpg", "Karma (teras + eğimli, yeni bina)"),
+    ("synth_07.jpg", "Karma (teras + eğimli, eski bina)"),
+    ("roof_03.jpg", "Gerçek fotoğraf"),
+]
+DEMO_SAMPLES = [name for name, _ in DEMO_SAMPLE_TITLES]
+DEMO_LABELS = [f"Örnek {i} – {title}" for i, (_, title) in enumerate(DEMO_SAMPLE_TITLES, start=1)]
+SYNTH_CAPTION = (
+    "YZ ile üretilmiş sentetik örnek (Google Gemini görüntü modeli, 21.10.2026). Gerçek bir bina değildir; "
+    "YZ'nin çatıda neleri bulduğunu göstermek içindir."
+)
 DEMO_NOT_YOURS = "Bu fotoğraf seçtiğiniz binaya ait değildir; YZ'nin çatıda neleri bulduğunu göstermek içindir."
 DEMO_ANALYZE_LABEL = "YZ ile analiz et"
 DEMO_SPINNER = "Fotoğraf analiz ediliyor (1–2 dakika sürebilir)…"
@@ -1205,7 +1219,12 @@ def demo_section(state):
     except OSError:
         st.info("Örnek fotoğraf bulunamadı.")
         return
-    st.image(image_bytes, caption=source_caption(filename))
+    if filename.startswith("synth_"):
+        st.image(image_bytes)
+        st.badge("Sentetik", color="orange")
+        st.caption(SYNTH_CAPTION)
+    else:
+        st.image(image_bytes, caption=source_caption(filename))
     st.caption(f"Dosya: {filename}")
     st.info(DEMO_NOT_YOURS)
     cache = state.setdefault(KEY_DEMO_CACHE, {})

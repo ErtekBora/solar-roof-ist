@@ -193,8 +193,13 @@ def test_the_uploaded_photo_survives_a_trip_to_another_source(mocked, building_p
 def test_the_selector_offers_exactly_the_five_curated_samples(mocked, images, building_point):
     at = _select(_run_with_point(building_point), app.SRC_DEMO)
     radio = _widget(at.radio, "Örnek fotoğraf")
-    assert _demo_labels(at) == ["Örnek 1", "Örnek 2", "Örnek 3", "Örnek 4", "Örnek 5"]
-    assert app.DEMO_SAMPLES == ["roof_03.jpg", "roof_05.jpg", "roof_08.jpg", "roof_10.jpg", "roof_14.jpg"]
+    assert _demo_labels(at) == [
+        "Örnek 1 – Düz teras, çok engelli (eski bina)", "Örnek 2 – Düz teras, çok engelli (yeni bina)",
+        "Örnek 3 – Düz teras, az engelli", "Örnek 4 – Beşik çatı", "Örnek 5 – Kırma çatı",
+        "Örnek 6 – Karma (teras + eğimli, yeni bina)", "Örnek 7 – Karma (teras + eğimli, eski bina)",
+        "Örnek 8 – Gerçek fotoğraf",
+    ]
+    assert app.DEMO_SAMPLES == [f"synth_0{i}.jpg" for i in range(1, 8)] + ["roof_03.jpg"]
     assert radio.value is None  # nothing selected by default
     assert not images
 
@@ -202,11 +207,11 @@ def test_the_selector_offers_exactly_the_five_curated_samples(mocked, images, bu
 def test_selecting_a_sample_shows_the_photo_at_once_without_a_gemini_call(mocked, fake_gemini, images, building_point):
     client = fake_gemini([])
     at = _select(_run_with_point(building_point), app.SRC_DEMO)
-    _widget(at.radio, "Örnek fotoğraf").set_value("Örnek 4").run()
+    _widget(at.radio, "Örnek fotoğraf").set_value(app.DEMO_LABELS[3]).run()
     assert not at.exception and client.calls == 0
-    assert len(images) == 1 and "Pexels License" in images[0]
+    assert len(images) == 1 and images[0] is None  # the synthetic caption is a st.caption, not an image caption
     captions = [c.value for c in at.caption]
-    assert "Dosya: roof_10.jpg" in captions
+    assert "Dosya: synth_04.jpg" in captions and app.SYNTH_CAPTION in captions
     assert app.DEMO_NOT_YOURS in [i.value for i in at.info]
     assert [b for b in at.button if b.label == "YZ ile analiz et"]
 
@@ -216,7 +221,7 @@ def test_analyze_runs_one_call_only_when_pressed_and_is_cached_per_sample(
 ):
     client = fake_gemini([roof10_json])
     at = _select(_run_with_point(building_point), app.SRC_DEMO)
-    _widget(at.radio, "Örnek fotoğraf").set_value("Örnek 4").run()
+    _widget(at.radio, "Örnek fotoğraf").set_value(app.DEMO_LABELS[3]).run()
     _button(at, "Hesapla").click().run()  # Hesapla never analyses a sample
     assert client.calls == 0
     _button(at, "YZ ile analiz et").click().run()
@@ -225,10 +230,10 @@ def test_analyze_runs_one_call_only_when_pressed_and_is_cached_per_sample(
     assert any("YZ bu fotoğraftaki çatıyı eğimli olarak değerlendirdi" in w.value for w in at.markdown)
     at.run()
     images.clear()
-    _widget(at.radio, "Örnek fotoğraf").set_value("Örnek 2").run()
-    assert len(images) == 1 and not images[0].startswith("Yeşil") and client.calls == 1  # no analysis for this sample yet
+    _widget(at.radio, "Örnek fotoğraf").set_value(app.DEMO_LABELS[1]).run()
+    assert len(images) == 1 and images[0] is None and client.calls == 1  # no analysis for this sample yet
     images.clear()
-    _widget(at.radio, "Örnek fotoğraf").set_value("Örnek 4").run()
+    _widget(at.radio, "Örnek fotoğraf").set_value(app.DEMO_LABELS[3]).run()
     assert client.calls == 1 and images[-1].startswith("Yeşil: çatı sınırı")  # cached: shown again, no new call
 
 
@@ -241,7 +246,7 @@ def test_the_demo_never_changes_inputs_or_results(mocked, fake_gemini, roof10_js
         at.session_state[app.KEY_STRUCTURE], at.session_state[app.KEY_SHARE], at.session_state[app.KEY_FLATS],
     )
     _select(at, app.SRC_DEMO)
-    _widget(at.radio, "Örnek fotoğraf").set_value("Örnek 4").run()
+    _widget(at.radio, "Örnek fotoğraf").set_value(app.DEMO_LABELS[3]).run()
     _button(at, "YZ ile analiz et").click().run()
     assert not at.exception
     assert (at.session_state[app.KEY_STRUCTURE], at.session_state[app.KEY_SHARE], at.session_state[app.KEY_FLATS]) == inputs
@@ -256,7 +261,7 @@ def test_the_demo_never_changes_inputs_or_results(mocked, fake_gemini, roof10_js
 def test_a_failed_sample_analysis_is_shown_inside_the_demo_section(mocked, fake_gemini, building_point):
     fake_gemini(["{bad", "{bad"])
     at = _select(_run_with_point(building_point), app.SRC_DEMO)
-    _widget(at.radio, "Örnek fotoğraf").set_value("Örnek 4").run()
+    _widget(at.radio, "Örnek fotoğraf").set_value(app.DEMO_LABELS[3]).run()
     _button(at, "YZ ile analiz et").click().run()
     assert not at.exception and any("okunamadı" in w.value for w in at.warning)
 
@@ -318,3 +323,23 @@ def test_obstacle_and_panel_rows_follow_the_active_source(mocked, sample_index, 
     md = report.report_markdown(photo, [])
     assert "- Panel: ≈" in md and "orandan tahmini" in md
     assert "- Panel sayısı:" in report.report_markdown(lay, [])
+
+
+def test_every_sample_has_a_clean_caption_and_synthetic_ones_say_so(mocked, images, building_point):
+    at = _select(_run_with_point(building_point), app.SRC_DEMO)
+    for label, name in zip(app.DEMO_LABELS, app.DEMO_SAMPLES):
+        images.clear()
+        _widget(at.radio, "Örnek fotoğraf").set_value(label).run()
+        assert not at.exception and len(images) == 1
+        texts = [c.value for c in at.caption] + [images[0] or ""] + [m.value for m in at.markdown]
+        assert not any("TODO" in t or "eklenecek" in t for t in texts), name
+        if name.startswith("synth_"):
+            assert app.SYNTH_CAPTION in [c.value for c in at.caption] and "sentetik" in app.SYNTH_CAPTION.lower()
+            assert "Sentetik" in " ".join(m.value for m in at.markdown)
+            assert images[0] is None
+        else:
+            assert images[0].endswith("https://www.pexels.com/tr-tr/@drector/") and "Pexels License" in images[0]
+    assert app.SYNTH_CAPTION == (
+        "YZ ile üretilmiş sentetik örnek (Google Gemini görüntü modeli, 21.10.2026). Gerçek bir bina değildir; "
+        "YZ'nin çatıda neleri bulduğunu göstermek içindir."
+    )
