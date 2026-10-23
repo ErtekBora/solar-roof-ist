@@ -1,7 +1,5 @@
 """Streamlit UI (Turkish): Istanbul rooftop solar suitability tool."""
 import logging
-from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 
 import altair as alt
 import folium
@@ -30,7 +28,6 @@ from core.config import (
     M2_PER_KWP_PITCHED,
     MAP_CENTER,
     MAP_ZOOM,
-    MAX_UPLOAD_MB,
     PANEL_KWP,
     PANEL_LENGTH_M,
     PANEL_WIDTH_M,
@@ -44,13 +41,7 @@ from core.config import (
 from core.formatting import percent_from_ratio, round_half_up, tr_num
 from core.report import ratio_panel_text
 from core.solar import SolarDataError, fetch_roof_yields
-from core.vision import (
-    OBSTACLE_LABELS_TR,
-    VisionError,
-    compute_obstacle_ratio,
-    detect_roof_objects,
-    draw_overlay,
-)
+from core.vision import compute_obstacle_ratio
 
 log = logging.getLogger(__name__)
 MONTHS_TR = ["Oca", "Şub", "Mar", "Nis", "May", "Haz", "Tem", "Ağu", "Eyl", "Eki", "Kas", "Ara"]
@@ -60,17 +51,8 @@ UNKNOWN_CHOICE = building_mode.STRUCTURE_LABELS_TR["unknown"]
 MIXED_CHOICE = building_mode.STRUCTURE_LABELS_TR["mixed"]
 # session keys: stable widget keys, plus bookkeeping for the per-building reset
 KEY_BILL, KEY_FLATS, KEY_STRUCTURE, KEY_SHARE = "bill_input", "n_flats", "roof_structure", "flat_share"
-KEY_BUILDING, KEY_FLATS_ESTIMATE, KEY_PENDING_ROOF = "_input_building", "_flats_estimate", "_pending_roof"
+KEY_BUILDING, KEY_FLATS_ESTIMATE = "_input_building", "_flats_estimate"
 KEY_BILL_KEEP, KEY_MANUAL_AREA = "_bill_keep", "manual_area"
-# obstacle source: ONE active source; the other sources' data stays in the state and is ignored meanwhile
-KEY_SOURCE, KEY_DEMO, KEY_DEMO_CACHE = "obstacle_source", "demo_choice", "_demo_cache"
-KEY_PHOTO, KEY_PHOTO_LIVE, KEY_PHOTO_RESULT = "_photo", "_photo_uploader_live", "_photo_result"
-SRC_DRAW = "Haritada çizerek (önerilen)"
-SRC_PHOTO = "Kendi çatı fotoğrafımla (YZ analizi)"
-SRC_DEMO = "Örnek fotoğrafla YZ'yi dene (hesaba katılmaz)"
-SOURCE_CHOICES = [SRC_DRAW, SRC_PHOTO, SRC_DEMO]
-SOURCE_LABEL = "Çatı engelleri nereden gelsin?"
-PHOTO_FIELDS = ("detection", "vision_error", "roof_note", "roof_preselect", "photo_bytes")
 KEY_BILL_SHOWN = "_bill_shown"
 KEY_PITCHED, KEY_PITCHED_KEEP, KEY_DRAWINGS, KEY_DRAW_MODE = "pitched_type", "_pitched_keep", "_roof_drawings", "draw_mode"
 PITCHED_CHOICES = list(building_mode.PITCHED_TYPE_LABELS_TR.values())
@@ -80,7 +62,7 @@ DRAW_OBSTACLE, DRAW_TERRACE = "Engel çiz", "Teras çiz"
 ALIGN_CLICK_LABEL, ALIGN_CANCEL_LABEL = "Çatıya tıklayarak hizala", "İptal"
 ALIGN_CLICK_CAPTION = "Uydu görüntüsünde çatının ortasına bir kez tıklayın."
 ROOF_VIEW_PRE_CAPTION = (
-    "Çatı fotoğrafınız yoksa uydu görüntüsüne bakarak çerçeveyi hizalayın ve engelleri şimdi çizebilirsiniz."
+    "Uydu görüntüsüne bakarak çerçeveyi hizalayın ve engelleri şimdi çizebilirsiniz."
 )
 ALIGN_EXPANDER_LABEL = "Çerçeveyi çatıya hizala (yüksek binalarda gerekir)"  # fixed: a changing label would collapse it
 ALIGN_APPROX_CAPTION = (
@@ -122,44 +104,16 @@ FACE_STATUS_TR = {
 HELP_STEPS = (
     "1. Haritada binanıza tıklayın.\n"
     "2. Daire sayısını kontrol edin.\n"
-    "3. Engel kaynağını seçin: haritada çizin (önerilen) veya çatı fotoğrafı yükleyin.\n"
+    "3. Engelleri haritada çizin.\n"
     "4. Gerekirse çerçeveyi çatıya hizalayın.\n"
     "5. İsteğe bağlı bilgileri girip Hesapla'ya basın."
 )
 NOT_USED_LAYOUT = "kullanılmadı (panel yerleşimi)"
 NO_FLAT_SECTION = "kullanılmadı (düz bölüm yok)"
-PHOTO_STEP_TITLE = "Çatı fotoğrafı yükleyin"
-PHOTO_GUIDANCE = (
-    "Çatıya ya da terasa çıkıp köşelerden çekin; fotoğraf yalnızca bellekte işlenir, kaydedilmez."
-)
-PHOTO_BENEFIT = "Fotoğraf, ortalama kullanılabilir alan varsayımının yerine geçer ve sonucun güvenini artırır."
-PHOTO_MODE_CAPTION = "Fotoğraf modunda engeller fotoğraftan alınır; çizmek için 'Haritada çizerek' seçin."
-DEMO_MODE_CAPTION = "Örnek modunda hesap ortalama orana göre yapılır; engel çizmek için 'Haritada çizerek' seçin."
 NO_BUILDING_DRAW_CAPTION = "Çizim yalnızca haritadan seçilen binalar için yapılabilir; ortalama oran kullanılacak."
 RATIO_NO_PANELS_CAPTION = (
-    "Panel yerleşimini görmek için 'Haritada çizerek' seçip engelleri çizin veya 'Engel yok, çatı boş' deyin."
+    "Panel yerleşimini görmek için engelleri çizin veya 'Engel yok, çatı boş' deyin."
 )
-DEMO_DIR = Path(__file__).parent / "data" / "demo_images"
-DEMO_SAMPLE_TITLES = [
-    ("synth_01.jpg", "Düz teras, çok engelli (eski bina)"),
-    ("synth_02.jpg", "Düz teras, çok engelli (yeni bina)"),
-    ("synth_03.jpg", "Düz teras, az engelli"),
-    ("synth_04.jpg", "Beşik çatı"),
-    ("synth_05.jpg", "Kırma çatı"),
-    ("synth_06.jpg", "Karma (teras + eğimli, yeni bina)"),
-    ("synth_07.jpg", "Karma (teras + eğimli, eski bina)"),
-    ("roof_05.jpg", "Gerçek fotoğraf"),
-]
-DEMO_SAMPLES = [name for name, _ in DEMO_SAMPLE_TITLES]
-DEMO_LABELS = [f"Örnek {i} – {title}" for i, (_, title) in enumerate(DEMO_SAMPLE_TITLES, start=1)]
-SYNTH_CAPTION = (
-    "YZ ile üretilmiş sentetik örnek (Google Gemini görüntü modeli, 21.10.2026). Gerçek bir bina değildir; "
-    "YZ'nin çatıda neleri bulduğunu göstermek içindir."
-)
-DEMO_NOT_YOURS = "Bu fotoğraf seçtiğiniz binaya ait değildir; YZ'nin çatıda neleri bulduğunu göstermek içindir."
-DEMO_ANALYZE_LABEL = "YZ ile analiz et"
-DEMO_SPINNER = "Fotoğraf analiz ediliyor (1–2 dakika sürebilir)…"
-DEMO_ROOF_TYPE_TR = {"flat": "düz", "pitched": "eğimli", "mixed": "karma (düz teras + eğimli)"}
 ACCENT = "#e8710a"
 ATTRIBUTION = (
     "© OpenStreetMap katkıcıları · Bina verisi: Overture Maps Foundation (ODbL), Microsoft ML Buildings · "
@@ -476,9 +430,6 @@ def sync_building_inputs(state, building, area):
     state[KEY_PITCHED] = state[KEY_PITCHED_KEEP] = HIP_CHOICE
     state[KEY_DRAWINGS] = drawings.new_state(key)  # drawings belong to one building
     state[KEY_BUILDING] = key
-    state[KEY_SOURCE] = SRC_DRAW  # the obstacle source starts again for a new building
-    for stale in (KEY_DEMO, KEY_PHOTO, KEY_PHOTO_LIVE, KEY_PHOTO_RESULT):
-        state.pop(stale, None)
     return True
 
 
@@ -509,27 +460,11 @@ def drawing_state(state, building):
     return draw
 
 
-def apply_pending_roof(state):
-    """A photo's roof-structure pre-selection is applied on the next run, before the widgets are created."""
-    pending = state.pop(KEY_PENDING_ROOF, None)
-    if pending:
-        state[KEY_STRUCTURE], state[KEY_SHARE] = pending
-
-
 def reset_inputs(state):
     """'Sıfırla': clears the bill too and forces the per-building reset on the next run."""
     state[KEY_BILL] = None
     state[KEY_BILL_KEEP] = None
     state.pop(KEY_BUILDING, None)
-
-
-def photo_roof_choice(detection):
-    """((roof structure label, flat share %), note) pre-selected from the photo; never 'Bilmiyorum'."""
-    detected = detection["roof_type"]
-    if detected == "mixed":
-        return (MIXED_CHOICE, FLAT_SHARE_DEFAULT_PCT), "Çatı karma görünüyor; düz teras payı %50 olarak ön seçildi, kaydırıcıdan değiştirebilirsiniz."
-    key = "flat" if detected == "flat" else "pitched"
-    return (building_mode.STRUCTURE_LABELS_TR[key], FLAT_SHARE_DEFAULT_PCT), None
 
 
 def collect_inputs(state, analysis, override=None):
@@ -551,11 +486,6 @@ def collect_inputs(state, analysis, override=None):
         "n_flats": n, "n_flats_estimated": n == state.get(KEY_FLATS_ESTIMATE),
         "bill": clean_bill(state.get(KEY_BILL, state.get(KEY_BILL_KEEP))), "building": analysis.get("building"),
     }
-
-
-def selected_ids(editor_df):
-    """Obstacle ids ticked in the confirmation table."""
-    return {int(i) for i in editor_df.index[editor_df["Dahil"]]}
 
 
 def recompute(bundle, inputs, detection, included_ids):
@@ -623,16 +553,6 @@ def resolve_api_key():
         return None, str(exc)
 
 
-def explained_detection(detection, included_ids, inputs=None):
-    """Detection restricted to the ticked obstacles (what the explanation may mention).
-
-    None when there is no photo or the photo does not apply to the building (inputs["photo_applies"] False).
-    """
-    if detection is None or (inputs is not None and not inputs.get("photo_applies", True)):
-        return None
-    return {**detection, "obstacles": [o for o in detection["obstacles"] if o["id"] in included_ids]}
-
-
 def generate_explanation(result, detection, demo_photo, api_key):
     """Build the explanation state {text, source, key}. Without a key the template is used (no Gemini call)."""
     key = explain.payload_key(explain.build_payload(result, detection, demo_photo))
@@ -652,30 +572,6 @@ def regenerate_explanation(result, detection, demo_photo):
     """Re-explain the current result (button handler, main thread) and return the new explanation state."""
     api_key, _ = resolve_api_key()
     return generate_explanation(result, detection, demo_photo, api_key)
-
-
-# ------------------------------------------------------------------- photos
-
-def parse_sources(path=DEMO_DIR / "SOURCES.md"):
-    """Parse SOURCES.md into {filename: {source, author, license, link}}."""
-    rows = {}
-    try:
-        lines = Path(path).read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return rows
-    for line in lines:
-        cells = [c.strip() for c in line.strip().strip("|").split("|")]
-        if len(cells) == 5 and cells[0].endswith((".jpg", ".png")):
-            rows[cells[0]] = dict(zip(("source", "author", "license", "link"), cells[1:]))
-    return rows
-
-
-def source_caption(filename):
-    info = parse_sources().get(filename)
-    if not info:
-        return "Kaynak bilgisi bulunamadı."
-    text = f"Kaynak: {info['source']} · Yazar: {info['author']} · Lisans: {info['license']}"
-    return f"{text} · {info['link']}" if info["link"].startswith("http") else text  # no placeholder without a real URL
 
 
 # ------------------------------------------------------------ building text
@@ -727,7 +623,7 @@ def input_classes(inputs, has_photo_applied, building, result=None):
     elif has_photo_applied:
         measured.append("Engel oranı: fotoğraf analizi")
     else:
-        assumed.append("Engeller: fotoğraf yok, ortalama kullanılabilir alan oranı")
+        assumed.append("Engeller: çizim yok, ortalama kullanılabilir alan oranı")
     if inputs["structure"] == "unknown":
         assumed.append("Çatı yapısı: bilinmiyor, tamamen düz ve tamamen eğimli çatı için aralık hesaplandı")
     if inputs.get("n_flats_estimated"):
@@ -783,7 +679,7 @@ def assumption_rows(r, inputs, detection, explanation=None, report=None):
     )
     rows += [
         ("Daire sayısı", f"{r['daire_sayisi']}", "Varsayım" if r["daire_sayisi_tahmini"] else "Kullanıcı girdisi", flats_note),
-        ("Çatı yapısı", structure_text(r), inputs["roof_tag"], "Fotoğraf analizi, kullanıcı seçimi veya 'Bilmiyorum' (iki uç durum hesaplanır)"),
+        ("Çatı yapısı", structure_text(r), inputs["roof_tag"], "Kullanıcı seçimi veya 'Bilmiyorum' (iki uç durum hesaplanır)"),
     ]
     if r["cati_yapisi"] != "flat":
         rows.append((
@@ -809,7 +705,7 @@ def assumption_rows(r, inputs, detection, explanation=None, report=None):
             "Kendi çatı fotoğrafınızdan YZ ile; kullanılabilir alan = alan × (1 − engel oranı)",
         ))
     else:
-        rows.append(("Engeller", "ortalama oran", "Varsayım", "Çizim veya fotoğraf yok: ortalama kullanılabilir alan oranı"))
+        rows.append(("Engeller", "ortalama oran", "Varsayım", "Çizim yok: ortalama kullanılabilir alan oranı"))
     if layout_mode:
         rows.append(("Kullanılabilir alan oranı", NOT_USED_LAYOUT, "Kullanıcı girdisi", "Kurulabilir güç panel yerleşiminden gelir"))
     if applied:
@@ -823,7 +719,7 @@ def assumption_rows(r, inputs, detection, explanation=None, report=None):
     elif layout_mode:
         pass  # the unused-ratio row is added above
     elif building is None:
-        rows.append(("Kullanılabilir alan oranı", f"{USABLE_RATIO_NO_PHOTO}", "Varsayım", "Ember ortalaması (fotoğraf yok)"))
+        rows.append(("Kullanılabilir alan oranı", f"{USABLE_RATIO_NO_PHOTO}", "Varsayım", "Ember ortalaması (çizim yok)"))
     else:
         rows.append(("Kullanılabilir alan oranı", f"{tr_num(USABLE_RATIO_NO_PHOTO / EDGE_FACTOR, 3)}", "Varsayım", building_mode.USABLE_RATIO_NOTE))
     ridge = building["ridge_azimuth_deg"] if building is not None else DEFAULT_RIDGE_AZIMUTH_DEG
@@ -877,7 +773,7 @@ def assumption_rows(r, inputs, detection, explanation=None, report=None):
         ("Paylaşım", "eşit TL indirim", "Varsayım", "Bina tasarrufu = N × daire tasarrufu (ortalama fatura); daire başına indirim = toplam ÷ N; kWh de eşit bölünür"),
         ("Geri ödeme", "basit", "Varsayım", "Daire başına maliyet ÷ yıllık tasarruf; bozulma, bakım ve tarife değişimi dikkate alınmadı"),
         ("CO₂ faktörü", f"{CO2_FACTOR_T_PER_MWH} tCO₂/MWh", "Varsayım", "ETKB TUESEF 2021"),
-        ("Güven seviyesi", r["guven_seviyesi"], "Varsayım", "Alan kaynağı, fotoğraf, çatı yapısı ve çatı yüzü verisine bağlı kural"),
+        ("Güven seviyesi", r["guven_seviyesi"], "Varsayım", "Alan kaynağı, engel çizimi, çatı yapısı ve çatı yüzü verisine bağlı kural"),
         ("Komşu bina gölgesi", "—", "Sonraki aşamada", "Bina yüksekliği ve komşu binalarla"),
     ]
     if explanation is not None:
@@ -1148,177 +1044,6 @@ def explanation_section(analysis, result, detection):
     st.caption(EXPLANATION_CAPTIONS[explanation["source"]])
 
 
-def active_analysis(state, analysis, source):
-    """The stored analysis seen through the active obstacle source.
-
-    The photo analysis (detection, annotated photo, roof-type suggestion) is kept in `KEY_PHOTO_RESULT` and only
-    joins the calculation while the photo source is selected; every other source sees a photo-less analysis.
-    """
-    photo = (state.get(KEY_PHOTO_RESULT) or {}) if source == SRC_PHOTO else {}
-    return {**analysis, **{field: photo.get(field) for field in PHOTO_FIELDS}}
-
-
-def photo_upload(state):
-    """Uploader of the photo source. Returns {"name", "bytes"} of the photo to analyse, or None.
-
-    The photo is kept in the session state (memory only) so it survives a trip to another source; removing it from
-    the uploader while this source is visible forgets it.
-    """
-    st.write(PHOTO_GUIDANCE)
-    uploaded = st.file_uploader(PHOTO_STEP_TITLE, type=["jpg", "jpeg", "png"], label_visibility="collapsed")
-    st.caption(PHOTO_BENEFIT)
-    if uploaded is not None:
-        state[KEY_PHOTO_LIVE] = True
-        if uploaded.size > MAX_UPLOAD_MB * 1024 * 1024:
-            st.error(f"Dosya çok büyük; en fazla {MAX_UPLOAD_MB} MB yükleyebilirsiniz.")
-            state.pop(KEY_PHOTO, None)
-        else:
-            state[KEY_PHOTO] = {"name": uploaded.name, "bytes": uploaded.getvalue()}
-    elif state.pop(KEY_PHOTO_LIVE, False):  # the user removed the file from the uploader
-        state.pop(KEY_PHOTO, None)
-    photo = state.get(KEY_PHOTO)
-    if photo is not None and uploaded is None:
-        st.caption(f"Daha önce yüklenen fotoğraf kullanılıyor: {photo['name']}. Yeni bir fotoğraf yükleyebilirsiniz.")
-    return photo
-
-
-def show_demo_result(image_bytes, detection):
-    """Annotated photo, obstacle table and roof-type remark of a sample analysis (display only)."""
-    obstacles = detection["obstacles"]
-    st.image(
-        draw_overlay(image_bytes, detection, {o["id"] for o in obstacles}),
-        caption="Yeşil: çatı sınırı · Kırmızı: YZ'nin bulduğu engeller",
-    )
-    if obstacles:
-        st.dataframe(
-            pd.DataFrame({
-                "No": [o["id"] for o in obstacles],
-                "Engel": [OBSTACLE_LABELS_TR[o["label"]] for o in obstacles],
-                "Güven": [f"%{round(o['confidence'] * 100)}" for o in obstacles],
-            }),
-            hide_index=True, width="stretch",
-        )
-    else:
-        st.write("Çatıda engel tespit edilmedi.")
-    st.write(
-        f"YZ bu fotoğraftaki çatıyı {DEMO_ROOF_TYPE_TR[detection['roof_type']]} olarak değerlendirdi. "
-        "Bu yalnızca bir örnektir; çatı yapısı seçiminizi ve hesabınızı değiştirmez."
-    )
-
-
-def demo_section(state):
-    """Sample photos: shown at once; the Gemini analysis runs only on 'YZ ile analiz et' and is cached per sample.
-
-    Nothing here ever changes an input or a result.
-    """
-    choice = st.radio("Örnek fotoğraf", DEMO_LABELS, index=None, key=KEY_DEMO, horizontal=True)
-    if choice is None:
-        return
-    filename = DEMO_SAMPLES[DEMO_LABELS.index(choice)]
-    try:
-        image_bytes = (DEMO_DIR / filename).read_bytes()
-    except OSError:
-        st.info("Örnek fotoğraf bulunamadı.")
-        return
-    if filename.startswith("synth_"):
-        st.image(image_bytes)
-        st.badge("Sentetik", color="orange")
-        st.caption(SYNTH_CAPTION)
-        st.caption(f"Dosya: {filename}")
-    else:
-        st.image(image_bytes, caption=source_caption(filename))
-        st.caption(f"Dosya: {filename}")
-        st.info(DEMO_NOT_YOURS)
-    cache = state.setdefault(KEY_DEMO_CACHE, {})
-    if st.button(DEMO_ANALYZE_LABEL, key="demo_analyze"):
-        api_key, key_error = resolve_api_key()
-        if api_key is None:
-            cache[filename] = {"error": key_error}
-        else:
-            with st.spinner(DEMO_SPINNER):
-                try:
-                    cache[filename] = {"detection": detect_roof_objects(image_bytes, api_key)}
-                except VisionError as exc:
-                    cache[filename] = {"error": str(exc)}
-    entry = cache.get(filename)
-    if entry is None:
-        return
-    if "error" in entry:
-        st.warning(entry["error"])
-    else:
-        show_demo_result(image_bytes, entry["detection"])
-
-
-def source_step(state, building):
-    """The one obstacle source ('Çatı engelleri nereden gelsin?'). Returns (source, photo or None).
-
-    Only the selected option's widgets are shown. Only the photo source returns a photo; the other sources'
-    data stays in the state and is ignored by the calculation until their option is selected again.
-    """
-    st.subheader("Engel kaynağı")
-    state.setdefault(KEY_SOURCE, SRC_DRAW)
-    source = st.radio(SOURCE_LABEL, SOURCE_CHOICES, key=KEY_SOURCE)
-    photo = None
-    if source == SRC_PHOTO:
-        photo = photo_upload(state)
-        st.caption(PHOTO_MODE_CAPTION)
-    else:
-        state.pop(KEY_PHOTO_LIVE, None)  # a fresh uploader on return is not a removal
-        if source == SRC_DEMO:
-            demo_section(state)
-        elif building is None:
-            st.caption(NO_BUILDING_DRAW_CAPTION)
-    return source, photo
-
-
-def photo_section(state, applies):
-    """Show detection messages, the confirmation table and the overlay ids; return the ticked obstacle ids or None."""
-    detection = state.get("detection")
-    if state.get("vision_error"):
-        st.warning(f"{state['vision_error']} Fotoğrafsız hesap gösteriliyor; güven seviyesi düşük.")
-    if detection is None:
-        return None
-
-    st.subheader("Fotoğraf analizi")
-    if detection["multiple_buildings"]:
-        st.warning("Fotoğrafta birden fazla bina var; sonuç ana çatı için hesaplandı. Mümkünse tek çatıyı kırpın.")
-    if detection["image_view"] == "oblique":
-        st.info("Açılı fotoğraf: alan ölçümü yaklaşık; güven düşürüldü.")
-    if detection["roof_source"] == "box":
-        st.info("Çatı sınırı kutu olarak alındı; sonuç yaklaşık.")
-    if state.get("roof_note"):
-        st.info(state["roof_note"])
-
-    obstacles = detection["obstacles"]
-    if obstacles and applies:
-        df = pd.DataFrame(
-            {
-                "No": [o["id"] for o in obstacles],
-                "Dahil": [True] * len(obstacles),
-                "Engel": [OBSTACLE_LABELS_TR[o["label"]] for o in obstacles],
-                "Güven": [round(o["confidence"] * 100) for o in obstacles],
-            },
-            index=[o["id"] for o in obstacles],
-        )
-        st.caption("Çatıda gerçekten engel olmayanların işaretini kaldırın; sonuç anında güncellenir.")
-        edited = st.data_editor(
-            df,
-            key=f"obstacles_{detection['image_hash'][:8]}",
-            disabled=["No", "Engel", "Güven"],
-            hide_index=True,
-            column_config={
-                "No": st.column_config.NumberColumn("No", format="%d", width="small"),
-                "Dahil": st.column_config.CheckboxColumn("Dahil"),
-                "Güven": st.column_config.NumberColumn("Güven", format="%d%%"),
-            },
-            width="stretch",
-        )
-        return selected_ids(edited)
-    if not obstacles:
-        st.write("Çatıda engel tespit edilmedi.")
-    return {o["id"] for o in obstacles} if not applies else set()
-
-
 def flats_step(state):
     """Step b: Daire sayısı, pre-filled with the estimate."""
     st.subheader("Daire sayısı")
@@ -1511,12 +1236,10 @@ def alignment_control(draw):
     st.caption(ALIGN_APPROX_CAPTION)
 
 
-def roof_view_section(state, building, roof=None, result=None, source=SRC_DRAW):
+def roof_view_section(state, building, roof=None, result=None):
     """'Çatı görünümü': the one roof map (isolated from the building selection) and the drawing tools.
 
-    The map is always rendered with the same key. Drawing tools, buttons and stored shapes belong to the drawing
-    source only: with another source the toolbar is hidden, the stored drawings are neither rendered nor changed
-    and whatever the map returns is ignored (an empty or missing `all_drawings` is never a deletion).
+    The map is always rendered with the same key.
 
     Rendered in one fixed place above 'Hesapla'. Before 'Hesapla' (`roof` is None) it shows the footprint, the setback
     line and the user's shapes only; drawing and offset changes just update the stored state. After 'Hesapla' it also
@@ -1530,62 +1253,52 @@ def roof_view_section(state, building, roof=None, result=None, source=SRC_DRAW):
     footprint = shapely.from_wkb(building["footprint_wkb_m"])
     setback = roof["model"]["setback"] if roof is not None else layout.setback_polygon(footprint)
     structure = result["cati_yapisi"] if result is not None else STRUCTURE_FROM_CHOICE.get(state.get(KEY_STRUCTURE))
-    drawing = source == SRC_DRAW
-    mode_label = DRAW_OBSTACLE
-    if drawing:
-        modes = [DRAW_OBSTACLE, DRAW_TERRACE] if structure == "mixed" else [DRAW_OBSTACLE]
-        if state.get(KEY_DRAW_MODE) not in modes:
-            state.pop(KEY_DRAW_MODE, None)  # widget not created yet in this run: safe to reset
-        c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
-        mode_label = c1.radio("Çizim modu", modes, key=KEY_DRAW_MODE, horizontal=True)
-        c2.button("Engelleri temizle", on_click=_clear_drawings, help="Tüm çizimleri (teras dahil) siler.")
-        c3.button("Son çizimi geri al", on_click=_undo_drawing)
-        c4.button("Engel yok, çatı boş", on_click=_confirm_empty)
-        st.caption(
-            "Haritanın solundaki araçlarla dikdörtgen veya çokgen çizin. Engeller kırmızı, teras yeşil gösterilir. "
-            "Çizimleri silmek için 'Engelleri temizle' veya 'Son çizimi geri al' düğmelerini kullanın."
-        )
-        if roof is None:
-            st.caption(ROOF_VIEW_PRE_CAPTION)
-    else:
-        if source == SRC_DEMO:  # the photo-mode caption is already shown once, under the uploader
-            st.caption(DEMO_MODE_CAPTION)
-    if drawing:  # alignment belongs to the drawing source; the stored offset still moves the overlays elsewhere
-        if tuple(draw["offset"]) != (0.0, 0.0):
-            st.caption(drawings.offset_text(draw["offset"]))  # outside the expander: its label never changes
-        with st.expander(ALIGN_EXPANDER_LABEL, expanded=False):
-            alignment_control(draw)
+    modes = [DRAW_OBSTACLE, DRAW_TERRACE] if structure == "mixed" else [DRAW_OBSTACLE]
+    if state.get(KEY_DRAW_MODE) not in modes:
+        state.pop(KEY_DRAW_MODE, None)  # widget not created yet in this run: safe to reset
+    c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
+    mode_label = c1.radio("Çizim modu", modes, key=KEY_DRAW_MODE, horizontal=True)
+    c2.button("Engelleri temizle", on_click=_clear_drawings, help="Tüm çizimleri (teras dahil) siler.")
+    c3.button("Son çizimi geri al", on_click=_undo_drawing)
+    c4.button("Engel yok, çatı boş", on_click=_confirm_empty)
+    st.caption(
+        "Haritanın solundaki araçlarla dikdörtgen veya çokgen çizin. Engeller kırmızı, teras yeşil gösterilir. "
+        "Çizimleri silmek için 'Engelleri temizle' veya 'Son çizimi geri al' düğmelerini kullanın."
+    )
+    if roof is None:
+        st.caption(ROOF_VIEW_PRE_CAPTION)
+    if tuple(draw["offset"]) != (0.0, 0.0):
+        st.caption(drawings.offset_text(draw["offset"]))  # outside the expander: its label never changes
+    with st.expander(ALIGN_EXPANDER_LABEL, expanded=False):
+        alignment_control(draw)
     for note in (roof["notes"] if roof is not None else []):
         if note not in (NOTE_AVERAGE, NOTE_PHOTO):  # RATIO_NO_PANELS_CAPTION below replaces them
             st.info(note)
     if roof is not None and roof["mode"] != "geometry":
         st.caption(RATIO_NO_PANELS_CAPTION)
-    aligning = drawing and bool(draw.get("align_active"))
+    aligning = bool(draw.get("align_active"))
     if aligning:  # always reachable, even when the expander is collapsed
         st.caption(ALIGN_CLICK_CAPTION)
         st.button(ALIGN_CANCEL_LABEL, key="align_cancel", on_click=_cancel_align)
     data = st_folium(
-        build_roof_map(list(building["centroid"]), draw_tools=drawing and not aligning, aligning=aligning), key=drawings.map_key(draw),
+        build_roof_map(list(building["centroid"]), draw_tools=not aligning, aligning=aligning), key=drawings.map_key(draw),
         returned_objects=["all_drawings", "last_clicked"] if aligning else ["all_drawings"],
-        feature_group_to_add=build_roof_overlay(footprint, setback, draw, roof, result, show_drawings=drawing),
+        feature_group_to_add=build_roof_overlay(footprint, setback, draw, roof, result),
         height=520, use_container_width=True,
     )
     if aligning:
         if drawings.apply_click(draw, (data or {}).get("last_clicked"), footprint):
             st.rerun()  # once: the mode is off and the map is rebuilt at the new offset
         change = {"changed": False}  # a click never creates, changes or deletes drawings
-    elif drawing:
+    else:
         mode = drawings.TERRACE if mode_label == DRAW_TERRACE else drawings.OBSTACLE
         change = drawings.sync(draw, (data or {}).get("all_drawings"), mode, footprint)
-    else:
-        change = {"changed": False}  # another source is active: the map's drawing output is ignored completely
     if change["changed"]:
         st.rerun()  # once: the cards above and the map key follow the new drawings (a notice waits in the state)
-    if drawing:
-        notice, draw["notice"] = draw.get("notice"), None
-        if notice:
-            st.warning(notice)
-        st.caption(TRASH_NOTE)
+    notice, draw["notice"] = draw.get("notice"), None
+    if notice:
+        st.warning(notice)
+    st.caption(TRASH_NOTE)
     st.caption(ROOF_VIEW_CAPTION)
 
 
@@ -1642,8 +1355,7 @@ def main():
         st.button("Sıfırla", on_click=_reset_clicked, help="Fatura, daire sayısı ve çatı yapısı girdilerini temizler.")
         st.caption(ATTRIBUTION)
 
-    source, photo, pressed = state.get(KEY_SOURCE, SRC_DRAW), None, False
-    image_bytes = None
+    pressed = False
     roof_slot = None  # the one fixed place of the roof map: above 'Hesapla', filled once per run further down
     area = 150.0
     if point:
@@ -1654,17 +1366,15 @@ def main():
                 "Bina bulunamazsa kullanılacak çatı alanı (m²)", min_value=1.0, value=150.0, step=10.0, key=KEY_MANUAL_AREA
             )
         sync_building_inputs(state, building, area)
-        apply_pending_roof(state)
         ensure_defaults(state, bill_was_shown=state.pop(KEY_BILL_SHOWN, False))
         flats_step(state)
-        source, photo = source_step(state, building)
-        image_bytes = photo["bytes"] if photo is not None else None  # only the photo source feeds Gemini on Hesapla
+        if building is None:
+            st.caption(NO_BUILDING_DRAW_CAPTION)
         optional_inputs_step(state)
         if building is not None:
             roof_slot = st.container()
         pressed = st.button("Hesapla", type="primary")
 
-    preselect_rerun = False
     if pressed:
         if not point:
             st.error("Önce haritadan bir konum seçmelisiniz.")
@@ -1672,32 +1382,9 @@ def main():
             api_key, key_error = resolve_api_key()  # main thread: workers never touch st.*
             footprint_inputs = {"footprint_wkb_m": building["footprint_wkb_m"] if building else None}
             try:
-                detection, vision_error = None, None
-                # Gemini runs on its own thread so it never blocks one of the PVGIS workers
-                with ThreadPoolExecutor(max_workers=1) as vision_pool:
-                    vision_future = None
-                    if image_bytes is not None:
-                        if api_key:
-                            vision_future = vision_pool.submit(detect_roof_objects, image_bytes, api_key)
-                        else:
-                            vision_error = key_error
-                    with st.spinner("PVGIS verileri ve fotoğraf analizi bekleniyor, lütfen bekleyin…"):
-                        # flat + every unique face aspect (hip and gable), so later sub-type changes need no call
-                        bundle = fetch_roof_yields(point[0], point[1], pvgis_aspects(footprint_inputs))
-                        if vision_future is not None:
-                            try:
-                                detection = vision_future.result()
-                            except VisionError as exc:
-                                vision_error = str(exc)
-                roof_preselect, roof_note = photo_roof_choice(detection) if detection is not None else (None, None)
-                if source == SRC_PHOTO:  # the photo analysis is replaced only while the photo source is active
-                    if image_bytes is not None:
-                        state[KEY_PHOTO_RESULT] = {
-                            "detection": detection, "vision_error": vision_error, "roof_note": roof_note,
-                            "roof_preselect": roof_preselect, "photo_bytes": image_bytes if detection else None,
-                        }
-                    else:
-                        state.pop(KEY_PHOTO_RESULT, None)
+                with st.spinner("PVGIS verileri bekleniyor, lütfen bekleyin…"):
+                    # flat + every unique face aspect (hip and gable), so later sub-type changes need no call
+                    bundle = fetch_roof_yields(point[0], point[1], pvgis_aspects(footprint_inputs))
                 analysis = {
                     **bundle,
                     "key_error": key_error,
@@ -1712,17 +1399,10 @@ def main():
                     },
                 }
                 state["analysis"] = analysis
-                view = active_analysis(state, analysis, source)
-                inputs = collect_inputs(state, view, override=roof_preselect)
-                all_ids = {o["id"] for o in detection["obstacles"]} if detection else set()
-                active_draw = drawing_state(state, building) if source == SRC_DRAW else None
-                first, _, _ = evaluate(view, inputs, detection, all_ids, active_draw)
-                eff = explained_detection(detection, all_ids, inputs)
+                inputs = collect_inputs(state, analysis)
+                first, _, _ = evaluate(analysis, inputs, None, set(), drawing_state(state, building))
                 with st.spinner("YZ açıklaması hazırlanıyor…"):
-                    state["explanation"] = generate_explanation(first, eff, False, api_key)
-                if roof_preselect is not None and roof_preselect != (state.get(KEY_STRUCTURE), state.get(KEY_SHARE)):
-                    state[KEY_PENDING_ROOF] = roof_preselect  # widgets exist already: apply on the next run
-                    preselect_rerun = True
+                    state["explanation"] = generate_explanation(first, None, False, api_key)
             except SolarDataError as exc:
                 for k in ("analysis", "result", "explanation"):
                     state.pop(k, None)
@@ -1731,49 +1411,33 @@ def main():
                 for k in ("analysis", "result", "explanation"):
                     state.pop(k, None)
                 st.error("Girdiler geçersiz görünüyor. Lütfen çatı alanını kontrol edin.")
-    if preselect_rerun:
-        st.rerun()
 
     analysis = state.get("analysis")
     if not analysis and roof_slot is not None:
         with roof_slot:  # before 'Hesapla': imagery, outline, alignment and drawing tools only; no evaluation
-            roof_view_section(state, building, source=source)
+            roof_view_section(state, building)
     if analysis:
-        analysis = active_analysis(state, analysis, source)  # a photo analysis counts only for the photo source
-        detection = analysis["detection"]
-        applies = analysis["inputs"]["photo_applies"]
         st.markdown("---")
         inputs = collect_inputs(state, analysis)
-        if analysis.get("roof_preselect"):
-            st.caption("Çatı yapısı fotoğraf analizine göre seçildi; kenar çubuğundan değiştirebilirsiniz.")
-        ids = photo_section(analysis, applies)
-        draw = drawing_state(state, inputs["building"])  # alignment offset lives here whatever the source is
-        result, _ratio, roof = evaluate(
-            analysis, inputs, detection, ids or set(), draw if source == SRC_DRAW else None
-        )
+        draw = drawing_state(state, inputs["building"])
+        result, _ratio, roof = evaluate(analysis, inputs, None, set(), draw)
         state["result"] = result
-        if detection is not None:
-            st.image(
-                draw_overlay(analysis["photo_bytes"], detection, ids),
-                caption="Yeşil: çatı sınırı · Kırmızı: dahil edilen engeller · Gri: hariç tutulan engeller",
-            )
         st.subheader(f"Sonuçlar ({result['lat']:.4f}, {result['lon']:.4f})")
         if inputs["building"] is not None:
             # TODO(P2): building height joins the confidence and drives neighbour shading.
             st.caption(height_text(inputs["building"], index.report if index else None))
-        eff_detection = explained_detection(detection, ids or set(), inputs)
-        show_cards(result, inputs, eff_detection is not None, inputs["building"])
+        show_cards(result, inputs, False, inputs["building"])
         if roof is not None:
             with roof_slot:
-                roof_view_section(state, inputs["building"], roof, result, source=source)
+                roof_view_section(state, inputs["building"], roof, result)
         else:
             st.caption("Çatı görünümü yalnızca haritadan seçilen binalar için gösterilir (bina izi gerekir).")
-        explanation_section(analysis, result, eff_detection)
+        explanation_section(analysis, result, None)
         show_monthly(result)
         offset = draw.get("offset") if roof is not None else None
         breakdown_section(result, offset)
         st.subheader("Varsayımlar ve kaynaklar")
-        assumptions = assumption_rows(result, inputs, detection, state.get("explanation"), index.report if index else None)
+        assumptions = assumption_rows(result, inputs, None, state.get("explanation"), index.report if index else None)
         st.dataframe(assumptions, hide_index=True, width="stretch")
         download_section(result, assumptions.itertuples(index=False, name=None), offset)
 

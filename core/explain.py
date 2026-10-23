@@ -66,7 +66,7 @@ Amaç: apartmandaki dairelerin birlikte tek bir çatı sistemi kurması, tek sef
 Girdi, hesaplanmış sonuçları içeren bir JSON'dur. Yanıt KISA olsun: toplam en fazla yaklaşık 6 cümle ve en fazla 3 madde. TAM OLARAK şu yapıda yaz:
 1) İlk satır: TEK cümlelik genel hüküm. Değerlendirici sıfat kullanma (elverişli, uygun, ideal, mükemmel vb. yok); yalnızca özgül verimi (kWh/kWp) ve kurulabilir gücü (kWp) sayılarıyla aktar ve güven seviyesini belirt. Cümle nokta ile bitsin.
 2) Ayrı bir satırda en fazla 4 cümlelik kısa bir paragraf. Odak: binanın kurulabilir gücü ve yıllık üretimi (bina toplamı); daire başına sabit indirim (yıllık ve aylık ortalama) ve varsa geri ödeme süresi; en büyük belirsizlik ve onu azaltacak TEK adım. Yıllık ışınım ve arazi gölgesine en fazla bir cümle ayır. "Ortalama orana göre varsayım" ifadesini YALNIZCA fotograf_var false ise kullan; fotograf_var true ise alanın fotoğraftan ölçüldüğünü söyle. daire_sayisi_tahmini true ise "tahmini" de.
-3) "-" ile başlayan EN FAZLA 3 pratik öneri (ör. fotoğraf yoksa şunu öner: "Çatıya çıkıp fotoğraf yükleyin veya engelleri Çatı görünümünde çizin."; daire_sayisi_tahmini true ise gerçek daire sayısını girmelerini söyle; yalnızca engel_sayilari gerçekten su deposu, klima veya uydu çanağı içeriyorsa onları adetleriyle adlandırarak ("2 uydu çanağı") başka yere taşımayı öner; içermiyorsa taşıma önerme, bunun yerine başka yararlı bir öneri ver (uydu veya hava görüntüsü önerme) veya engel_sayilari "Baca" içeriyorsa tespit edilen baca sayısını yazarak şöyle öner: "Çatınızdaki 5 bacanın çevresindeki boşluğu bir kurulum firmasına kontrol ettirin.").
+3) "-" ile başlayan EN FAZLA 3 pratik öneri (ör. engel çizilmemişse şunu öner: "Engelleri Çatı görünümünde haritaya çizin."; daire_sayisi_tahmini true ise gerçek daire sayısını girmelerini söyle; yalnızca engel_sayilari gerçekten su deposu, klima veya uydu çanağı içeriyorsa onları adetleriyle adlandırarak ("2 uydu çanağı") başka yere taşımayı öner; içermiyorsa taşıma önerme, bunun yerine başka yararlı bir öneri ver (uydu veya hava görüntüsü önerme) veya engel_sayilari "Baca" içeriyorsa tespit edilen baca sayısını yazarak şöyle öner: "Çatınızdaki 5 bacanın çevresindeki boşluğu bir kurulum firmasına kontrol ettirin.").
 4) Son satır AYNEN şu olsun: {WARNING_LINE}
 
 Kesin kurallar:
@@ -346,9 +346,12 @@ def validate_explanation_numbers(text, payload):
     return not invalid, invalid
 
 
-PHOTO_OR_DRAW_TIP = "Çatıya çıkıp fotoğraf yükleyin veya engelleri Çatı görünümünde çizin."
-# 'uydu çanağı' (satellite dish, a roof obstacle) is fine; satellite / aerial imagery tips are not
-_BAD_TIP_RE = re.compile(r"kuşbakışı|uydu(?!\s*çana)|hava fotoğrafı", re.IGNORECASE)
+PHOTO_OR_DRAW_TIP = "Engelleri Çatı görünümünde haritaya çizin."
+# 'uydu çanağı' (satellite dish, a roof obstacle) is fine; satellite / aerial imagery tips are not, and neither are
+# photo upload tips (there is no photo input)
+_BAD_TIP_RE = re.compile(
+    r"kuşbakışı|uydu(?!\s*çana)|hava fotoğrafı|fotoğraf\w*\s+(?:yükle|gönder|ekle)", re.IGNORECASE
+)
 
 
 def sanitize_tips(text):

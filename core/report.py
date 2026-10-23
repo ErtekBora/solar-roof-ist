@@ -26,7 +26,7 @@ _RATIO_SOURCE = {
 }
 _RATIO_NOTE = {
     "fotograf": "fotoğraftaki engel oranı düşüldü",
-    "ortalama": "ortalama oran; fotoğraf/çizim yok",
+    "ortalama": "ortalama oran; çizim yok",
     "engel_yok": "kullanıcı çatının boş olduğunu onayladı",
 }
 

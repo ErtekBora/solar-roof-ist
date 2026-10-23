@@ -101,7 +101,7 @@ def building_confidence(
     elif image_view == "oblique":
         reasons.append("Fotoğraf yandan/eğik açıdan çekilmiş; engel alanı yaklaşık, güveni artırmıyor.")
     else:
-        reasons.append("Fotoğraf yok; kullanılabilir alan ortalama orana göre tahmin edildi (ortalama varsayım).")
+        reasons.append("Engel çizilmedi; kullanılabilir alan ortalama orana göre tahmin edildi (ortalama varsayım).")
     if not roof_known:
         level -= 1
         reasons.append("Çatı yapısı bilinmiyor; hem tamamen düz hem tamamen eğimli çatı için aralık hesaplandı.")
@@ -115,7 +115,7 @@ def building_confidence(
     if not roof_known:
         improve.append("Çatı yapısını seçin.")
     if not top_down and not obstacles_marked:
-        improve.append("Çatı fotoğrafı yükleyin.")
+        improve.append("Engelleri haritada çizin.")
     reasons.append("Komşu bina gölgesi henüz hesaba katılmıyor; yalnızca arazi gölgesi hesaplandı.")
     return _LEVELS[max(level, 0)], reasons, improve
 
