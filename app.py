@@ -1,5 +1,6 @@
 """Streamlit UI (Turkish): Istanbul rooftop solar suitability tool."""
 import logging
+import math
 
 import altair as alt
 import folium
@@ -1097,6 +1098,8 @@ FIT_VIEW_LABEL = "Görünümü çerçeveye ortala"
 # display-only imagery enhancement (browser-side SVG filter); the plain keys keep the choice while the map is hidden
 KEY_FX_MODE, KEY_FX_STRENGTH = "roof_fx_mode", "roof_fx_strength"
 KEY_FX_MODE_KEEP, KEY_FX_STRENGTH_KEEP = "_roof_fx_mode_keep", "_roof_fx_strength_keep"
+KEY_AID_GRID, KEY_AID_PANEL = "roof_aid_grid", "roof_aid_panel"  # display-only drawing aids, default off
+GRID_STEP_M = 1.0
 
 
 def build_roof_map(center, draw_tools=True, aligning=False, bounds=None, enhance=None):
@@ -1302,6 +1305,62 @@ def enhancement_control(state):
     return preset, strength
 
 
+def aids_control():
+    """'1 m ızgara' and 'Örnek panel' toggles (display only). Returns (grid, panel)."""
+    c1, c2 = st.columns(2)
+    grid = c1.toggle("1 m ızgara", key=KEY_AID_GRID, help="Ölçek için 1 m aralıklı çizgiler; hesaba katılmaz.")
+    panel = c2.toggle(
+        "Örnek panel", key=KEY_AID_PANEL,
+        help=f"Bir panelin gerçek boyutu ({tr_num(PANEL_LENGTH_M, 2)} × {tr_num(PANEL_WIDTH_M, 2)} m); hesaba katılmaz.",
+    )
+    return grid, panel
+
+
+def grid_lines_m(bounds, step=GRID_STEP_M):
+    """Metric (EPSG:32635) grid lines every `step` m, clipped to the fitted view `bounds` ([[s, w], [n, e]])."""
+    (s, w), (n, e) = bounds
+    xs, ys = drawings.to_metric([w, e, e, w], [s, s, n, n])
+    view = shapely.Polygon(list(zip(xs, ys)))
+    minx, miny, maxx, maxy = view.bounds
+    lines = [shapely.LineString([(x, miny), (x, maxy)]) for x in _steps(minx, maxx, step)]
+    lines += [shapely.LineString([(minx, y), (maxx, y)]) for y in _steps(miny, maxy, step)]
+    return [clipped for clipped in (view.intersection(line) for line in lines) if not clipped.is_empty]
+
+
+def _steps(lo, hi, step):
+    return [i * step for i in range(math.ceil(lo / step), math.floor(hi / step) + 1)]
+
+
+def sample_panel_m(footprint, offset=(0.0, 0.0)):
+    """One panel (PANEL_LENGTH_M x PANEL_WIDTH_M) at the shifted frame's centroid, long side along the footprint's
+    longest exterior edge."""
+    ring = list(max(shapely.get_parts(footprint), key=lambda part: part.area).exterior.coords)
+    (x0, y0), (x1, y1) = max(zip(ring, ring[1:]), key=lambda edge: math.dist(*edge))
+    angle = math.atan2(y1 - y0, x1 - x0)
+    c = drawings.shift_metric(footprint, offset).centroid
+    ux, uy, vx, vy = math.cos(angle), math.sin(angle), -math.sin(angle), math.cos(angle)
+    hl, hw = PANEL_LENGTH_M / 2, PANEL_WIDTH_M / 2
+    return shapely.Polygon([
+        (c.x + sx * hl * ux + sy * hw * vx, c.y + sx * hl * uy + sy * hw * vy) for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1))
+    ])
+
+
+def build_aids_overlay(bounds, footprint, offset, grid, panel):
+    """Separate, non-interactive display layers (never in the Draw feature group, never returned as drawings)."""
+    fg = folium.FeatureGroup(name="Yardımcı çizgiler")
+    layers = []
+    for line in grid_lines_m(bounds) if grid else ():
+        for part in shapely.get_parts(line):
+            layers.append(folium.PolyLine(_metric_ring_latlon(part.coords), color="#ffffff", weight=1, opacity=0.35))
+    if panel:
+        for ring in drawings.polygon_to_latlon(sample_panel_m(footprint, offset)):
+            layers.append(folium.Polygon(ring, color="#facc15", weight=2, dash_array="4", fill=False))
+    for layer in layers:
+        layer.options["interactive"] = False  # folium 0.20 drops interactive=...; Leaflet then ignores clicks on it
+        layer.add_to(fg)
+    return fg
+
+
 def alignment_control(draw, building=None):
     """'Çerçeveyi çatıya hizala': click-to-align, arrow buttons (1 m and 5 m per click), reset and the current offset.
     Display only."""
@@ -1370,13 +1429,17 @@ def roof_view_section(state, building, roof=None, result=None):
         st.button(ALIGN_CANCEL_LABEL, key="align_cancel", on_click=_cancel_align)
     bounds = roof_view_bounds(state, building, footprint)
     enhance = enhancement_control(state)
+    grid, panel = aids_control()
+    overlay = build_roof_overlay(footprint, setback, draw, roof, result)
+    if grid or panel:
+        overlay = [overlay, build_aids_overlay(bounds, footprint, draw["offset"], grid, panel)]
     data = st_folium(
         build_roof_map(
             list(building["centroid"]), draw_tools=not aligning, aligning=aligning, bounds=bounds, enhance=enhance,
         ),
         key=drawings.map_key(draw),
         returned_objects=["all_drawings", "last_clicked"] if aligning else ["all_drawings"],
-        feature_group_to_add=build_roof_overlay(footprint, setback, draw, roof, result),
+        feature_group_to_add=overlay,
         height=ROOF_MAP_HEIGHT, use_container_width=True,
     )
     if aligning:
