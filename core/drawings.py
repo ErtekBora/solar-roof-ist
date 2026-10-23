@@ -122,6 +122,11 @@ def _bump(state):
     state["ignored"] = []
 
 
+def rebuild(state):
+    """Rebuild the roof map (new `gen`) for a display-only change (view, enhancement); no stored shape changes."""
+    _bump(state)
+
+
 def sync(state, features, mode, footprint):
     """Merge st_folium's returned drawings into `state`. Returns {"changed": bool, "bump": bool}.
 

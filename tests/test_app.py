@@ -1536,16 +1536,17 @@ def test_align_mode_locks_the_map_and_restores_it(mocked, roof_figs, building_po
     calls, box, figs = roof_figs
     at = _run_with_point(building_point)
     free = figs[-1][0]
-    assert all(free.options[o] is True for o in ("dragging", "double_click_zoom", "box_zoom", "keyboard"))
-    assert "crosshair" not in free.get_root().render()
+    nav = ("dragging", "double_click_zoom", "box_zoom", "keyboard")
+    assert all(free.options[o] is False for o in nav)  # the roof map is a static view: navigation is always off
+    assert "crosshair" not in free.get_root().render() and _has_draw_toolbar(free)
     _button(at, "Çatıya tıklayarak hizala").click().run()
     locked = figs[-1][0]
-    assert all(locked.options[o] is False for o in ("dragging", "double_click_zoom", "box_zoom", "keyboard"))
-    assert "cursor: crosshair" in locked.get_root().render()
+    assert all(locked.options[o] is False for o in nav)
+    assert "cursor: crosshair" in locked.get_root().render() and not _has_draw_toolbar(locked)
     _button(at, "İptal").click().run()
     back = figs[-1][0]
-    assert all(back.options[o] is True for o in ("dragging", "double_click_zoom", "box_zoom", "keyboard"))
-    assert "crosshair" not in back.get_root().render()
+    assert all(back.options[o] is False for o in nav)
+    assert "crosshair" not in back.get_root().render() and _has_draw_toolbar(back)
 
 
 def test_alignment_caption_and_single_photo_mode_caption(mocked, building_point):

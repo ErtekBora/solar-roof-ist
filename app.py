@@ -1084,23 +1084,36 @@ def _reset_clicked():
 # ---------------------------------------------------------------- roof view
 
 CROSSHAIR_CSS = "<style>.leaflet-container {cursor: crosshair !important;}</style>"
+KEY_ROOF_BOUNDS = "_roof_view_bounds"  # {"building": id, "bounds": [[s, w], [n, e]]}: the fixed roof-map view
+ROOF_FIT_MARGIN = 0.15  # share of the footprint bbox span added on every side
+ROOF_MAX_ZOOM = 22
+ESRI_NATIVE_ZOOM = 19  # deepest Esri level used; above it tiles are upscaled instead of disappearing
+ROOF_MAP_HEIGHT = 620
+ROOF_TILE_CLASS = "roof-esri"
+FIT_VIEW_LABEL = "Görünümü çerçeveye ortala"
 
 
-def build_roof_map(center, draw_tools=True, aligning=False):
+def build_roof_map(center, draw_tools=True, aligning=False, bounds=None):
     """Static part of the roof map: Esri World Imagery (DISPLAY ONLY, attribution kept) and the Draw control
     (rectangle and polygon only; editing off, deleting on). `draw_tools=False` (click-to-align mode) omits the
-    toolbar so an alignment click can never add a vertex. `aligning` also turns off dragging, double-click zoom, box
-    zoom and keyboard panning (a click must never become a pan) and shows a crosshair; they return when it ends."""
-    # no scroll-wheel zoom: page scrolling must not be hijacked (the +/- buttons stay)
+    toolbar so an alignment click can never add a vertex; `aligning` also shows a crosshair.
+
+    The view is static: no dragging, zooming or zoom buttons. With `bounds` ([[s, w], [n, e]]) Leaflet fits the map
+    to them on every build (zoomSnap 0.1, so the same fractional zoom each time)."""
     m = folium.Map(
-        location=center, zoom_start=ROOF_VIEW_ZOOM, max_zoom=21, tiles=None, scroll_wheel_zoom=False,
-        dragging=not aligning, double_click_zoom=not aligning, box_zoom=not aligning, keyboard=not aligning,
+        location=center, zoom_start=ROOF_VIEW_ZOOM, max_zoom=ROOF_MAX_ZOOM, tiles=None, zoom_control=False,
+        scroll_wheel_zoom=False, dragging=False, double_click_zoom=False, touch_zoom=False, box_zoom=False,
+        keyboard=False, zoom_snap=0.1, zoom_delta=0.1,
     )
+    m.options["maxZoom"] = ROOF_MAX_ZOOM  # folium 0.20 does not pass Map(max_zoom=...) to the Leaflet map options
     if aligning:
         m.get_root().html.add_child(folium.Element(CROSSHAIR_CSS))
     folium.TileLayer(
-        tiles=ESRI_TILES_URL, attr=ESRI_ATTRIBUTION, name="Uydu (yalnızca görüntüleme)", max_native_zoom=19, max_zoom=21,
+        tiles=ESRI_TILES_URL, attr=ESRI_ATTRIBUTION, name="Uydu (yalnızca görüntüleme)",
+        max_native_zoom=ESRI_NATIVE_ZOOM, max_zoom=ROOF_MAX_ZOOM, class_name=ROOF_TILE_CLASS,
     ).add_to(m)
+    if bounds is not None:
+        m.fit_bounds(bounds, max_zoom=ROOF_MAX_ZOOM, padding=(10, 10))
     if draw_tools:
         Draw(
             export=False, position="topleft", show_geometry_on_click=False,
@@ -1220,7 +1233,33 @@ def _cancel_align():
     drawings.cancel_align(st.session_state[KEY_DRAWINGS])
 
 
-def alignment_control(draw):
+def roof_fit_bounds(footprint, offset=(0.0, 0.0)):
+    """[[s, w], [n, e]] of the (offset-shifted) metric footprint in WGS84, widened by ROOF_FIT_MARGIN of each span."""
+    rings = drawings.polygon_to_latlon(footprint, offset)
+    lats = [p[0] for ring in rings for p in ring]
+    lons = [p[1] for ring in rings for p in ring]
+    d_lat, d_lon = (max(lats) - min(lats)) * ROOF_FIT_MARGIN, (max(lons) - min(lons)) * ROOF_FIT_MARGIN
+    return [[min(lats) - d_lat, min(lons) - d_lon], [max(lats) + d_lat, max(lons) + d_lon]]
+
+
+def roof_view_bounds(state, building, footprint):
+    """The fixed roof-map view of this building: set once from the footprint; only 'Görünümü çerçeveye ortala'
+    changes it (offset, drawings and enhancement never do)."""
+    stored = state.get(KEY_ROOF_BOUNDS)
+    if stored is None or stored["building"] != building_key(building):
+        stored = state[KEY_ROOF_BOUNDS] = {"building": building_key(building), "bounds": roof_fit_bounds(footprint)}
+    return stored["bounds"]
+
+
+def _fit_view_to_frame(building_id, footprint_wkb):
+    """'Görünümü çerçeveye ortala': the view follows the frame shifted by the current offset (a new map is built)."""
+    draw = st.session_state[KEY_DRAWINGS]
+    bounds = roof_fit_bounds(shapely.from_wkb(footprint_wkb), draw["offset"])
+    st.session_state[KEY_ROOF_BOUNDS] = {"building": building_id, "bounds": bounds}
+    drawings.rebuild(draw)
+
+
+def alignment_control(draw, building=None):
     """'Çerçeveyi çatıya hizala': click-to-align, arrow buttons (1 m and 5 m per click), reset and the current offset.
     Display only."""
     if not draw.get("align_active"):  # while active, 'İptal' and its caption live outside the expander
@@ -1232,6 +1271,12 @@ def alignment_control(draw):
             col.button(f"{prefix}{arrow}", key=f"align{prefix.strip()}_{arrow}", on_click=_move_offset, args=delta)
         if not prefix:
             cols[4].button("Sıfırla", key="align_reset", on_click=_reset_offset)
+            if building is not None:
+                cols[5].button(
+                    FIT_VIEW_LABEL, key="align_fit_view", on_click=_fit_view_to_frame,
+                    args=(building_key(building), building["footprint_wkb_m"]),
+                    help="Kaydırılmış çerçeve görünümün dışına çıktıysa haritayı ona göre yeniden ortalar.",
+                )
     st.caption(ALIGN_CAPTION)
     st.caption(ALIGN_APPROX_CAPTION)
 
@@ -1270,7 +1315,7 @@ def roof_view_section(state, building, roof=None, result=None):
     if tuple(draw["offset"]) != (0.0, 0.0):
         st.caption(drawings.offset_text(draw["offset"]))  # outside the expander: its label never changes
     with st.expander(ALIGN_EXPANDER_LABEL, expanded=False):
-        alignment_control(draw)
+        alignment_control(draw, building)
     for note in (roof["notes"] if roof is not None else []):
         if note not in (NOTE_AVERAGE, NOTE_PHOTO):  # RATIO_NO_PANELS_CAPTION below replaces them
             st.info(note)
@@ -1280,11 +1325,13 @@ def roof_view_section(state, building, roof=None, result=None):
     if aligning:  # always reachable, even when the expander is collapsed
         st.caption(ALIGN_CLICK_CAPTION)
         st.button(ALIGN_CANCEL_LABEL, key="align_cancel", on_click=_cancel_align)
+    bounds = roof_view_bounds(state, building, footprint)
     data = st_folium(
-        build_roof_map(list(building["centroid"]), draw_tools=not aligning, aligning=aligning), key=drawings.map_key(draw),
+        build_roof_map(list(building["centroid"]), draw_tools=not aligning, aligning=aligning, bounds=bounds),
+        key=drawings.map_key(draw),
         returned_objects=["all_drawings", "last_clicked"] if aligning else ["all_drawings"],
         feature_group_to_add=build_roof_overlay(footprint, setback, draw, roof, result),
-        height=520, use_container_width=True,
+        height=ROOF_MAP_HEIGHT, use_container_width=True,
     )
     if aligning:
         if drawings.apply_click(draw, (data or {}).get("last_clicked"), footprint):
