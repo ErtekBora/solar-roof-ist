@@ -65,6 +65,7 @@ ROOF_VIEW_PRE_CAPTION = (
     "Uydu görüntüsüne bakarak çerçeveyi hizalayın ve engelleri şimdi çizebilirsiniz."
 )
 ALIGN_EXPANDER_LABEL = "Çerçeveyi çatıya hizala (yüksek binalarda gerekir)"  # fixed: a changing label would collapse it
+KEY_ALIGN_EXPANDED = "_align_expanded"  # building id whose alignment expander stays open after an alignment click
 ALIGN_APPROX_CAPTION = (
     "Çerçeve çatıyla birebir örtüşmeyebilir (bina izi zemindeki sınırdır); çerçeveyi çatının ortasına getirmeniz yeterli."
 )
@@ -81,8 +82,10 @@ ROOF_VIEW_CAPTION = (
 )
 NOTE_AVERAGE = "Ortalama engel payı düşüldü — engelleri çizerek netleştirin"
 NOTE_PHOTO = "Fotoğraftaki engel payı düşüldü — engelleri çizerek netleştirin"
-NOTE_FLAT_ASSUMED = "düz çatı varsayımıyla"
-NOTE_FLAT_ASSUMED_GEOMETRY = "düz çatı varsayımıyla; çatı yapısını seçerseniz sonuç tek değere iner"
+NOTE_FLAT_ASSUMED = "Değer düz çatı varsayımıyla hesaplandı."
+NOTE_FLAT_ASSUMED_GEOMETRY = (
+    "Panel yerleşimi düz çatı varsayımıyla gösteriliyor; çatı yapısını seçerseniz sonuç tek değere iner."
+)
 DROPPED_FACE_TOOLTIP = "Verimsiz yüz — panel konmadı"
 NUMERIC_LABEL_SOURCE = {
     "ortalama": "ortalama orana göre",
@@ -1223,20 +1226,29 @@ def _undo_drawing():
     drawings.undo_last(st.session_state[KEY_DRAWINGS])
 
 
+def _keep_alignment_open():
+    """Alignment clicks keep 'Çerçeveyi çatıya hizala' open on the reruns that follow (for this building only)."""
+    st.session_state[KEY_ALIGN_EXPANDED] = st.session_state[KEY_DRAWINGS]["building"]
+
+
 def _move_offset(dx, dy):
     drawings.move_offset(st.session_state[KEY_DRAWINGS], dx, dy)
+    _keep_alignment_open()
 
 
 def _reset_offset():
     drawings.reset_offset(st.session_state[KEY_DRAWINGS])
+    _keep_alignment_open()
 
 
 def _start_align():
     drawings.start_align(st.session_state[KEY_DRAWINGS])
+    _keep_alignment_open()
 
 
 def _cancel_align():
     drawings.cancel_align(st.session_state[KEY_DRAWINGS])
+    _keep_alignment_open()
 
 
 def roof_fit_bounds(footprint, offset=(0.0, 0.0)):
@@ -1263,6 +1275,7 @@ def _fit_view_to_frame(building_id, footprint_wkb):
     bounds = roof_fit_bounds(shapely.from_wkb(footprint_wkb), draw["offset"])
     st.session_state[KEY_ROOF_BOUNDS] = {"building": building_id, "bounds": bounds}
     drawings.rebuild(draw)
+    _keep_alignment_open()
 
 
 def _fx_changed():
@@ -1344,7 +1357,7 @@ def roof_view_section(state, building, roof=None, result=None):
         st.caption(ROOF_VIEW_PRE_CAPTION)
     if tuple(draw["offset"]) != (0.0, 0.0):
         st.caption(drawings.offset_text(draw["offset"]))  # outside the expander: its label never changes
-    with st.expander(ALIGN_EXPANDER_LABEL, expanded=False):
+    with st.expander(ALIGN_EXPANDER_LABEL, expanded=state.get(KEY_ALIGN_EXPANDED) == building_key(building)):
         alignment_control(draw, building)
     for note in (roof["notes"] if roof is not None else []):
         if note not in (NOTE_AVERAGE, NOTE_PHOTO):  # RATIO_NO_PANELS_CAPTION below replaces them

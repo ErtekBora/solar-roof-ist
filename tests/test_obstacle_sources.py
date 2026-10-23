@@ -109,7 +109,7 @@ def test_drawing_source_has_a_collapsed_expander_with_a_constant_label(mocked, b
     _button(at, "5 m ↑").click().run()
     assert _offset_caption(at) == ["Kaydırma: 1 m D, 5 m K"]
     [again] = [e for e in at.expander if e.label.startswith("Çerçeveyi çatıya hizala")]
-    assert again.label == exp.label and again.proto.expanded is False  # the label never changes
+    assert again.label == exp.label and again.proto.expanded is True  # the label never changes; it stays open
     assert _offset_caption(at) and all(c.value not in _offset_caption(at) for c in again.caption)  # the line is outside
     _button(at, "Sıfırla").click().run()
     assert not _offset_caption(at)
