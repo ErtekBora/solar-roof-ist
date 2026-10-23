@@ -191,3 +191,28 @@ def test_flat_roof_notes_read_as_sentences():
     assert app.NOTE_FLAT_ASSUMED_GEOMETRY == (
         "Panel yerleşimi düz çatı varsayımıyla gösteriliyor; çatı yapısını seçerseniz sonuç tek değere iner."
     )
+
+
+# ------------------------------------------------------ tile seam + Sıfırla restores the view
+
+def test_tile_seam_css_is_on_the_roof_tiles_only_whether_or_not_the_filter_is_on():
+    for enhance in (True, False):
+        m = app.build_roof_map([40.97, 29.07], bounds=BOUNDS, enhance=enhance)
+        m.render()
+        assert ".roof-esri .leaflet-tile { width: 257px !important; height: 257px !important; }" in _get_html(m)
+    assert "257px" not in app.build_map().get_root().render()  # the first map is untouched
+
+
+def test_sifirla_restores_the_initial_fitted_view(mocked, roof_figs, sample_index, building_point):
+    calls, box, figs = roof_figs
+    at = _run_with_point(building_point)
+    footprint = shapely.from_wkb(_roof_inputs(sample_index, building_point)["footprint_wkb_m"])
+    initial = _bounds(at)
+    assert _flat(initial) == pytest.approx(_flat(app.roof_fit_bounds(footprint)))
+    _button(at, "5 m →").click().run()
+    _button(at, app.FIT_VIEW_LABEL).click().run()
+    assert _bounds(at) != initial
+    _button(at, "Sıfırla").click().run()
+    assert not at.exception
+    assert _roof_draw(at)["offset"] == (0.0, 0.0) and _bounds(at) == initial
+    assert f"{initial[0][0]}" in _script(figs[-1][0])  # the map is built with the initial view again

@@ -1087,6 +1087,9 @@ def _reset_clicked():
 # ---------------------------------------------------------------- roof view
 
 CROSSHAIR_CSS = "<style>.leaflet-container {cursor: crosshair !important;}</style>"
+# fractional zoom leaves a 1 px gap between tiles: 1 px of overlap hides it (over-zoom scales the level container,
+# each tile stays 256 px); roof tile layer only
+TILE_SEAM_CSS = "<style>.roof-esri .leaflet-tile { width: 257px !important; height: 257px !important; }</style>"
 KEY_ROOF_BOUNDS = "_roof_view_bounds"  # {"building": id, "bounds": [[s, w], [n, e]]}: the fixed roof-map view
 ROOF_FIT_MARGIN = 0.15  # share of the footprint bbox span added on every side
 ROOF_MAX_ZOOM = 22
@@ -1114,6 +1117,7 @@ def build_roof_map(center, draw_tools=True, aligning=False, bounds=None, enhance
     m.options["maxZoom"] = ROOF_MAX_ZOOM  # folium 0.20 does not pass Map(max_zoom=...) to the Leaflet map options
     if aligning:
         m.get_root().html.add_child(folium.Element(CROSSHAIR_CSS))
+    m.get_root().html.add_child(folium.Element(TILE_SEAM_CSS))
     folium.TileLayer(
         tiles=ESRI_TILES_URL, attr=ESRI_ATTRIBUTION, name="Uydu (yalnızca görüntüleme)",
         max_native_zoom=ESRI_NATIVE_ZOOM, max_zoom=ROOF_MAX_ZOOM, class_name=ROOF_TILE_CLASS,
@@ -1235,8 +1239,15 @@ def _move_offset(dx, dy):
     _keep_alignment_open()
 
 
-def _reset_offset():
-    drawings.reset_offset(st.session_state[KEY_DRAWINGS])
+def _reset_offset(building_id=None, footprint_wkb=None):
+    """'Sıfırla': offset back to zero and, for a building, the initial fitted view (footprint bbox + 15%) again."""
+    draw = st.session_state[KEY_DRAWINGS]
+    drawings.reset_offset(draw)
+    if footprint_wkb is not None:
+        initial = {"building": building_id, "bounds": roof_fit_bounds(shapely.from_wkb(footprint_wkb))}
+        if st.session_state.get(KEY_ROOF_BOUNDS) != initial:
+            st.session_state[KEY_ROOF_BOUNDS] = initial
+            drawings.rebuild(draw)  # a new view is a new map build
     _keep_alignment_open()
 
 
@@ -1304,7 +1315,8 @@ def alignment_control(draw, building=None):
         for col, arrow, delta in zip(cols, ("↑", "↓", "←", "→"), deltas):
             col.button(f"{prefix}{arrow}", key=f"align{prefix.strip()}_{arrow}", on_click=_move_offset, args=delta)
         if not prefix:
-            cols[4].button("Sıfırla", key="align_reset", on_click=_reset_offset)
+            reset_args = (building_key(building), building["footprint_wkb_m"]) if building is not None else ()
+            cols[4].button("Sıfırla", key="align_reset", on_click=_reset_offset, args=reset_args)
             if building is not None:
                 cols[5].button(
                     FIT_VIEW_LABEL, key="align_fit_view", on_click=_fit_view_to_frame,
