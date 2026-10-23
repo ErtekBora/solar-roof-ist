@@ -309,4 +309,4 @@ Building mode adds: `cati_yapisi, duz_pay_yuzde, daire_sayisi, daire_sayisi_tahm
   - ±1 floor height sensitivity of the score
 
 ## 12. Out of scope (for this deadline)
-User accounts, storing results, permits/regulation RAG, LightGBM height model, 3D/DSM per-pixel irradiance, payment or installer marketplace.
+User accounts, storing results, permits/regulation RAG, training or running a height model inside the app (the precomputed LightGBM `height_ml_m` column is in scope), 3D/DSM per-pixel irradiance, payment or installer marketplace.

@@ -65,7 +65,7 @@ def system_prompt_for(payload=None):
 Amaç: apartmandaki dairelerin birlikte tek bir çatı sistemi kurması, tek seferde ödemesi ve üretimi dairelere EŞİT paylaştırarak elektrik faturalarını düşürmesidir.
 Girdi, hesaplanmış sonuçları içeren bir JSON'dur. Yanıt KISA olsun: toplam en fazla yaklaşık 6 cümle ve en fazla 3 madde. TAM OLARAK şu yapıda yaz:
 1) İlk satır: TEK cümlelik genel hüküm. Değerlendirici sıfat kullanma (elverişli, uygun, ideal, mükemmel vb. yok); yalnızca özgül verimi (kWh/kWp) ve kurulabilir gücü (kWp) sayılarıyla aktar ve güven seviyesini belirt. Cümle nokta ile bitsin.
-2) Ayrı bir satırda en fazla 4 cümlelik kısa bir paragraf. Odak: binanın kurulabilir gücü ve yıllık üretimi (bina toplamı); daire başına sabit indirim (yıllık ve aylık ortalama) ve varsa geri ödeme süresi; en büyük belirsizlik ve onu azaltacak TEK adım. Yıllık ışınım ve arazi gölgesine en fazla bir cümle ayır. "Ortalama orana göre varsayım" ifadesini YALNIZCA fotograf_var false ise kullan; fotograf_var true ise alanın fotoğraftan ölçüldüğünü söyle. daire_sayisi_tahmini true ise "tahmini" de.
+2) Ayrı bir satırda en fazla 4 cümlelik kısa bir paragraf. Odak: binanın kurulabilir gücü ve yıllık üretimi (bina toplamı); daire başına sabit indirim (yıllık ve aylık ortalama) ve varsa geri ödeme süresi; en büyük belirsizlik ve onu azaltacak TEK adım. Yıllık ışınım ve arazi gölgesine en fazla bir cümle ayır. "Ortalama orana göre varsayım" ifadesini YALNIZCA engel çizilmediyse kullan; fotograf_var true ise alanın fotoğraftan ölçüldüğünü söyle. daire_sayisi_tahmini true ise "tahmini" de.
 3) "-" ile başlayan EN FAZLA 3 pratik öneri (ör. engel çizilmemişse şunu öner: "Engelleri Çatı görünümünde haritaya çizin."; daire_sayisi_tahmini true ise gerçek daire sayısını girmelerini söyle; yalnızca engel_sayilari gerçekten su deposu, klima veya uydu çanağı içeriyorsa onları adetleriyle adlandırarak ("2 uydu çanağı") başka yere taşımayı öner; içermiyorsa taşıma önerme, bunun yerine başka yararlı bir öneri ver (uydu veya hava görüntüsü önerme) veya engel_sayilari "Baca" içeriyorsa tespit edilen baca sayısını yazarak şöyle öner: "Çatınızdaki 5 bacanın çevresindeki boşluğu bir kurulum firmasına kontrol ettirin.").
 4) Son satır AYNEN şu olsun: {WARNING_LINE}
 
@@ -459,7 +459,7 @@ def _building_fallback(p):
     elif p.get("cizilen_engel_sayisi") is not None:
         s4 = f"Kurulabilir güç, çizdiğiniz engellere göre yerleşen {_fmt(p['panel_sayisi'])} panelden hesaplandı."
     elif not p["fotograf_var"]:
-        s4 = "En büyük belirsizlik kullanılabilir alan: fotoğraf olmadığı için ortalama orana göre varsayıldı."
+        s4 = "En büyük belirsizlik kullanılabilir alan: engel çizilmediği için ortalama orana göre varsayıldı."
     elif p.get("engel_orani") is not None:
         s4 = f"Fotoğrafa göre çatının %{tr_num(percent_from_ratio(p['engel_orani']), 1)} kadarı engellerle kaplı."
     elif p["daire_sayisi_tahmini"]:
