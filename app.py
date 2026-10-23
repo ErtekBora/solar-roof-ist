@@ -1093,6 +1093,7 @@ TILE_SEAM_CSS = "<style>.roof-esri .leaflet-tile { width: 257px !important; heig
 KEY_ROOF_BOUNDS = "_roof_view_bounds"  # {"building": id, "bounds": [[s, w], [n, e]]}: the fixed roof-map view
 ROOF_FIT_MARGIN = 0.15  # share of the footprint bbox span added on every side
 ROOF_MAX_ZOOM = 22
+ROOF_MAX_FIT_ZOOM = 20.0  # the fitted view stops here: less upscaling, sharper imagery
 ESRI_NATIVE_ZOOM = 19  # deepest Esri level used; above it tiles are upscaled instead of disappearing
 ROOF_MAP_HEIGHT = 620
 ROOF_TILE_CLASS = "roof-esri"
@@ -1123,7 +1124,7 @@ def build_roof_map(center, draw_tools=True, aligning=False, bounds=None, enhance
         max_native_zoom=ESRI_NATIVE_ZOOM, max_zoom=ROOF_MAX_ZOOM, class_name=ROOF_TILE_CLASS,
     ).add_to(m)
     if bounds is not None:
-        m.fit_bounds(bounds, max_zoom=ROOF_MAX_ZOOM, padding=(10, 10))
+        m.fit_bounds(bounds, max_zoom=ROOF_MAX_FIT_ZOOM, padding=(10, 10))
     if enhance:  # after fit_bounds: the zoom script must run once the fitted view exists
         imagery_fx.add_to_map(m, ROOF_TILE_CLASS)
     if draw_tools:

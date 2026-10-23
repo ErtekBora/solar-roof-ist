@@ -43,13 +43,23 @@ def _draw_one(at, box, sample_index, building_point):
 
 def test_rendered_roof_map_is_a_static_fitted_view():
     js = _script(app.build_roof_map([40.97, 29.07], bounds=BOUNDS))
-    assert '.fitBounds( [[40.969, 29.069], [40.971, 29.071]], {"maxZoom": 22, "padding": [10, 10]} );' in js
+    assert '.fitBounds( [[40.969, 29.069], [40.971, 29.071]], {"maxZoom": 20.0, "padding": [10, 10]} );' in js
     assert '"zoomSnap": 0.1' in js and '"zoomDelta": 0.1' in js and '"maxZoom": 22, } } );' in js
     for option in ("dragging", "scrollWheelZoom", "doubleClickZoom", "touchZoom", "boxZoom", "keyboard", "zoomControl"):
         assert f'"{option}": false' in js, option
     tile = re.search(r"L\.tileLayer\(.*?\);", js).group()
     assert '"className": "roof-esri"' in tile and '"maxNativeZoom": 19' in tile and '"maxZoom": 22' in tile
     assert "Tiles \\u00a9 Esri" in tile  # the Esri attribution is unchanged
+
+
+def test_fitted_zoom_is_capped_at_20_while_map_and_tiles_allow_22():
+    import json
+
+    js = _script(app.build_roof_map([40.97, 29.07], bounds=BOUNDS))
+    options = json.loads(re.search(r"\.fitBounds\( \[\[.*?\]\], (\{.*?\}) \);", js).group(1))
+    assert options["maxZoom"] == 20 and app.ROOF_MAX_FIT_ZOOM == 20.0
+    assert '"maxZoom": 22, } } );' in js  # map option
+    assert '"maxZoom": 22' in re.search(r"L\.tileLayer\(.*?\);", js).group()  # tile layer
 
 
 def test_the_draw_toolbar_still_exists_on_the_static_map():
