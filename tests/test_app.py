@@ -109,9 +109,8 @@ def test_hesapla_and_the_optional_inputs_are_available_right_after_building_sele
     assert [b for b in at.button if b.label == "Hesapla"] and [r for r in at.radio if r.label == ROOF_LABEL]
     assert [n for n in at.number_input if n.label == BILL_LABEL]
     titles = [h.value for h in at.subheader]
-    assert titles[:2] == ["Daire sayısı", "Engel kaynağı"]  # the flat count, then the one obstacle source
-    source = _widget(at.radio, app.SOURCE_LABEL)
-    assert list(source.options) == app.SOURCE_CHOICES and source.value == app.SRC_DRAW
+    assert titles[:2] == ["Daire sayısı", "İsteğe bağlı bilgiler"]  # no obstacle-source step: drawing is the only one
+    assert not [r for r in at.radio if r.label == "Çatı engelleri nereden gelsin?"]
     assert not at.file_uploader and not [b for b in at.button if b.label == "Fotoğrafsız devam et"]
 
 
@@ -410,43 +409,6 @@ def test_confidence_card_lists_inputs_and_improvements(mocked, building_point):
 
 # ---------------------------------------------------------- demo photo vs a real building
 
-def _run_photo(name, point=OUT_OF_COVERAGE):
-    """Open the app on a point with the photo source selected and `name` (a bundled image) as the uploaded photo."""
-    at = _run_with_point(point)
-    at.session_state[app.KEY_PHOTO] = {"name": name, "bytes": (app.DEMO_DIR / name).read_bytes()}
-    _widget(at.radio, app.SOURCE_LABEL).set_value(app.SRC_PHOTO).run()
-    return at
-
-
-def test_own_photo_on_a_real_building_feeds_the_calculation(mocked, fake_gemini, roof10_json, spy_capacity, building_point):
-    client = fake_gemini([roof10_json])
-    at = _run_photo("roof_10.jpg", building_point)
-    _button(at, "Hesapla").click().run()
-    assert not at.exception and client.calls == 1
-    call = spy_capacity[-1]
-    assert 0 < call["obstacle_ratio"] < 0.95 and call["image_view"] == "oblique"
-    r = at.session_state["result"]
-    assert r["engel_orani"] is not None and r["guc_kaynagi"] == "fotograf"
-    assert [k for k in at.session_state if k.startswith("obstacles_")]  # the confirmation table is shown
-
-
-def test_uploaded_style_photo_is_applied_to_the_building(sample_index, building_point):
-    building = buildings.find_building(sample_index, *building_point)["building"]
-    inputs = {**_inputs(), "area": building["area_m2"], "usable_base_area_m2": building["setback_area_m2"],
-              "photo_applies": True}
-    det = _square_detection()
-    result, ratio = app.recompute(_bundle(), inputs, det, {0, 1})
-    assert ratio == pytest.approx(0.5) and result["engel_orani"] == pytest.approx(0.5)
-    assert result["kullanilabilir_alan_m2"] == pytest.approx(building["setback_area_m2"] * 0.5, abs=0.01)
-    assert result["guven_seviyesi"] == "Orta"  # polygon + top-down photo + known roof structure
-    inputs["photo_applies"] = False  # kept for older callers: the photo is then ignored
-    result, ratio = app.recompute(_bundle(), inputs, det, {0, 1})
-    assert ratio is None and result["engel_orani"] is None and result["goruntu_turu"] is None
-    assert app.explained_detection(det, {0, 1}, inputs) is None
-
-
-# ------------------------------------------------------------- texts
-
 def test_height_text_per_source_and_mae_from_the_report():
     b = {"height_m": 24.0}
     rep = {"cv_mae_m": 6.78}
@@ -548,13 +510,6 @@ def test_all_obstacles_deselected_is_zero_ratio_not_no_photo(monkeypatch):
     assert ratio_none is None and r_none["kullanilabilir_alan_m2"] == pytest.approx(100.0 * 0.276)
 
 
-def test_selected_ids_from_editor_dataframe():
-    import pandas as pd
-
-    df = pd.DataFrame({"Dahil": [True, False, True]}, index=[0, 1, 2])
-    assert app.selected_ids(df) == {0, 2}
-
-
 def _state(label, share=50, flats=3, estimate=3, bill=None):
     return {app.KEY_STRUCTURE: label, app.KEY_SHARE: share, app.KEY_FLATS: flats, app.KEY_FLATS_ESTIMATE: estimate, app.KEY_BILL: bill}
 
@@ -583,22 +538,6 @@ def test_collect_inputs_clamps_flats_cleans_bill_and_marks_edits():
     assert app.collect_inputs(_state("Bilmiyorum", bill=900), analysis)["bill"] == 900.0
     override = app.collect_inputs(_state("Bilmiyorum"), analysis, override=("Karma (teras + eğimli)", 70))
     assert override["structure"] == "mixed" and override["flat_share_pct"] == 70
-
-
-def test_photo_roof_choice_preselects_gemini_answer():
-    assert app.photo_roof_choice({"roof_type": "pitched"}) == (("Tamamen eğimli", 50), None)
-    assert app.photo_roof_choice({"roof_type": "flat"}) == (("Tamamen düz", 50), None)
-    choice, note = app.photo_roof_choice({"roof_type": "mixed"})
-    assert choice == ("Karma (teras + eğimli)", 50) and "karma" in note and "%50" in note
-    assert "Bilmiyorum" not in {app.photo_roof_choice({"roof_type": t})[0][0] for t in ("flat", "pitched", "mixed")}
-
-
-def test_parse_sources_and_caption():
-    info = app.parse_sources()["roof_10.jpg"]
-    assert info["license"] == "Pexels License"
-    assert "Pexels License" in app.source_caption("roof_10.jpg")
-    assert app.source_caption("roof_10.jpg").endswith("Lisans: Pexels License")  # no real URL: ends after the licence
-    assert "https://" in app.source_caption("roof_01.jpg")
 
 
 def test_assumption_rows_tags_and_demo_row():
@@ -630,61 +569,6 @@ def test_assumption_rows_for_a_building_include_setback_height_and_ml_note(sampl
     assert by.loc["Komşu bina gölgesi", "Durum"] == "Sonraki aşamada"
 
 
-@pytest.fixture
-def spy_vision_capacity(spy_capacity):
-    return spy_capacity
-
-
-def test_photo_flow_ratio_reaches_the_analysis_and_preselects_detected_structure(
-    mocked, fake_gemini, roof10_json, spy_vision_capacity
-):
-    client = fake_gemini([roof10_json])
-    at = _run_photo("roof_10.jpg")  # no building: the demo photo applies as before
-    _button(at, "Hesapla").click().run()
-    assert not at.exception
-    assert client.calls == 1
-    call = spy_vision_capacity[-1]
-    assert 0 < call["obstacle_ratio"] < 0.95 and call["structure"] == "pitched"  # roof_10 fixture: pitched, oblique
-    assert call["image_view"] == "oblique"
-    assert _widget(at.radio, ROOF_LABEL).value == "Tamamen eğimli"  # pre-selected via the pending mechanism
-    assert any("Çatı yapısı fotoğraf analizine göre seçildi" in c.value for c in at.caption)
-    labels = [m.label for m in at.metric]
-    assert "Engel oranı" in labels and len(labels) == 14
-    assert any("Açılı fotoğraf" in i.value for i in at.info)
-    assert at.dataframe  # assumptions table
-    assert at.session_state["result"]["guven_seviyesi"] == "Düşük"
-    row = at.dataframe[-1].value
-    assert "Ölçüm/veri" in set(row[row["Değer"] == "Çatı yapısı"]["Durum"])
-    # a plain rerun must not call Gemini again, and the explanation made after the pre-selection is not stale
-    at.run()
-    assert client.calls == 1
-    assert not any("açıklama güncel değil" in i.value for i in at.info)
-
-
-def test_mixed_photo_preselects_karma_at_fifty_percent(mocked, fake_gemini, roof10_json):
-    fake_gemini([{**roof10_json, "roof_type": "mixed"}])
-    at = _run_photo("roof_10.jpg")
-    _button(at, "Hesapla").click().run()
-    assert not at.exception
-    assert _widget(at.radio, ROOF_LABEL).value == "Karma (teras + eğimli)"
-    [slider] = [x for x in at.slider if x.label == SHARE_LABEL]
-    assert slider.value == 50
-    assert any("karma" in i.value for i in at.info)
-
-
-def test_switching_photos_gives_fresh_editor_keys(mocked, fake_gemini, roof10_json):
-    fake_gemini([roof10_json, roof10_json])
-    at = _run_photo("roof_10.jpg")
-    _button(at, "Hesapla").click().run()
-    key_a = next(k for k in at.session_state if k.startswith("obstacles_"))
-    at.session_state[app.KEY_PHOTO] = {"name": "roof_14.jpg", "bytes": (app.DEMO_DIR / "roof_14.jpg").read_bytes()}
-    at.run()
-    _button(at, "Hesapla").click().run()
-    keys = [k for k in at.session_state if k.startswith("obstacles_")]
-    key_b = [k for k in keys if k != key_a]
-    assert key_b, "a different photo must use a different data_editor key"
-
-
 def test_no_photo_path_still_works_and_lists_assumption(mocked, spy_capacity):
     at = _run_with_point()
     _button(at, "Hesapla").click().run()
@@ -694,19 +578,6 @@ def test_no_photo_path_still_works_and_lists_assumption(mocked, spy_capacity):
     assert len(at.metric) == 13
     assert at.session_state["result"]["guven_seviyesi"] == "Düşük"
 
-
-def test_vision_error_falls_back_to_no_photo_calculation(mocked, fake_gemini, spy_capacity):
-    fake_gemini(["{bad", "{bad"])
-    at = _run_photo("roof_10.jpg")
-    _button(at, "Hesapla").click().run()
-    assert not at.exception
-    assert any("okunamadı" in w.value for w in at.warning)
-    assert spy_capacity[-1]["obstacle_ratio"] is None
-    assert at.session_state["result"]["guven_seviyesi"] == "Düşük"
-    assert len(at.metric) == 13
-
-
-# ------------------------------------------------------------- explanation (Demo-3)
 
 EXPLAIN_BUTTON = "Açıklamayı YZ ile güncelle"
 
@@ -751,55 +622,18 @@ def test_no_photo_flow_has_thirteen_cards_and_explanation(mocked):
     assert len(at.metric) == 14 and "Faturanın karşılanan kısmı" in [m.label for m in at.metric]
 
 
-def test_missing_key_skips_vision_and_uses_template(mocked, fake_gemini, monkeypatch):
+def test_missing_key_uses_template_and_warns(mocked, fake_explain, monkeypatch):
     def no_key():
         raise config.MissingApiKeyError("Gemini API anahtarı bulunamadı. Test.")
 
     monkeypatch.setattr(config, "get_gemini_api_key", no_key)
-    client = fake_gemini([])
-    at = _run_photo("roof_10.jpg")
+    client = fake_explain([])
+    at = _run_with_point()
     _button(at, "Hesapla").click().run()
     assert not at.exception and client.calls == 0
     assert any("anahtarı bulunamadı" in w.value for w in at.warning)
     assert at.session_state["explanation"]["source"] == "template"
     assert len(at.metric) == 13
-
-
-def test_api_key_is_resolved_in_main_thread_and_passed_to_worker(mocked, monkeypatch, roof10_json):
-    seen = []
-
-    def spy(image_bytes, api_key=None):
-        seen.append(api_key)
-        raise vision.VisionError("Test hatası.")
-
-    monkeypatch.setattr(vision, "detect_roof_objects", spy)
-    at = _run_photo("roof_10.jpg")
-    _button(at, "Hesapla").click().run()
-    assert not at.exception and seen == ["test-key"]
-    assert any("Test hatası." in w.value for w in at.warning)
-
-
-def test_obstacle_edit_makes_explanation_stale_without_gemini_then_regenerate_clears_it(
-    mocked, fake_explain, monkeypatch
-):
-    solar_result = _bundle()
-    det = _square_detection()
-    inputs = dict(_inputs(), demo_photo=False)
-    monkeypatch.setattr(app, "get_gemini_api_key", lambda: "test-key")
-    result_all, _ = app.recompute(solar_result, inputs, det, {0, 1})
-    client = fake_explain([explain.build_fallback_explanation(result_all, app.explained_detection(det, {0, 1}), False)] * 2)
-    exp = app.generate_explanation(result_all, app.explained_detection(det, {0, 1}), False, "k")
-    assert exp["source"] == "gemini" and client.calls == 1
-
-    result_one, _ = app.recompute(solar_result, inputs, det, {0})  # obstacle 1 unticked
-    det_one = app.explained_detection(det, {0})
-    assert not app.explanation_is_stale(exp, result_all, app.explained_detection(det, {0, 1}), False)
-    assert app.explanation_is_stale(exp, result_one, det_one, False)
-    assert client.calls == 1  # detecting staleness never calls Gemini
-
-    fake_explain([explain.build_fallback_explanation(result_one, det_one, False)])
-    new = app.regenerate_explanation(result_one, det_one, False)
-    assert new["source"] == "gemini" and not app.explanation_is_stale(new, result_one, det_one, False)
 
 
 def test_a_new_bill_makes_the_stored_explanation_stale():
@@ -900,15 +734,6 @@ def test_reset_clears_the_bill_and_forces_the_per_building_reset():
     assert state[app.KEY_BILL] is None
     assert app.sync_building_inputs(state, b, 100.0) is True
     assert state[app.KEY_FLATS] == 6 and state[app.KEY_STRUCTURE] == "Bilmiyorum"
-
-
-def test_pending_photo_preselection_is_applied_once():
-    state = {app.KEY_PENDING_ROOF: ("Tamamen eğimli", 50)}
-    app.apply_pending_roof(state)
-    assert state[app.KEY_STRUCTURE] == "Tamamen eğimli" and app.KEY_PENDING_ROOF not in state
-    state[app.KEY_STRUCTURE] = "Tamamen düz"
-    app.apply_pending_roof(state)  # nothing pending: the user choice is untouched
-    assert state[app.KEY_STRUCTURE] == "Tamamen düz"
 
 
 def _second_building_point(sample_index):
@@ -1056,12 +881,8 @@ def test_ranges_collapse_to_one_value_when_equal_after_rounding():
 
 
 def test_out_of_range_cost_flag_and_demo_notice_texts(mocked, building_point):
-    assert app.DEMO_NOT_YOURS == (
-        "Bu fotoğraf seçtiğiniz binaya ait değildir; YZ'nin çatıda neleri bulduğunu göstermek içindir."
-    )
-    assert app.SRC_DEMO == "Örnek fotoğrafla YZ'yi dene (hesaba katılmaz)"
     at = _run_with_point(building_point)
-    assert not at.expander or app.SRC_DEMO not in [e.label for e in at.expander]  # no demo expander any more
+    assert not any("Örnek fotoğraf" in e.label for e in at.expander)  # no demo expander any more
 
 
 def test_large_system_shows_the_labelled_cost_warning(mocked, monkeypatch, building_point):
@@ -1366,7 +1187,7 @@ def test_obstacle_line_follows_the_drawing_or_the_no_obstacle_statement(mocked, 
     calls, box = map_calls
     at = _after_hesapla(building_point)
     texts = lambda: " ".join(m.value for m in at.markdown)
-    assert "Engeller: fotoğraf yok, ortalama kullanılabilir alan oranı" in texts()
+    assert "Engeller: çizim yok, ortalama kullanılabilir alan oranı" in texts()
     box["roof"] = {"all_drawings": [_feature(_centre_obstacle(_roof_inputs(sample_index, building_point)))]}
     at.run()
     assert "Engeller: kullanıcı çizimi" in texts() and "ortalama kullanılabilir alan oranı" not in texts()
@@ -1731,32 +1552,5 @@ def test_alignment_caption_and_single_photo_mode_caption(mocked, building_point)
     at = _run_with_point(building_point)
     assert app.ALIGN_APPROX_CAPTION in [c.value for c in at.caption]
     assert app.ALIGN_APPROX_CAPTION.startswith("Çerçeve çatıyla birebir örtüşmeyebilir")
-    at = _run_photo("roof_10.jpg", building_point)
-    assert [c.value for c in at.caption].count(app.PHOTO_MODE_CAPTION) == 1
 
 
-def test_no_sample_caption_contains_a_placeholder():
-    sources = (app.DEMO_DIR / "SOURCES.md").read_text(encoding="utf-8")
-    for name in app.DEMO_SAMPLES + ["roof_03.jpg", "roof_08.jpg", "roof_10.jpg", "roof_14.jpg"]:
-        caption = app.source_caption(name)
-        assert "Lisans:" in caption and "eklenecek" not in caption and "TODO" not in caption, name
-    assert app.DEMO_SAMPLES[-1] == "roof_05.jpg"
-    assert app.source_caption("roof_05.jpg") == (
-        "Kaynak: Pexels (İstanbul apartmanları, turuncu kırma kiremit çatı kırpılmış) · Yazar: Dmitry Limonov · "
-        "Lisans: Pexels License"  # no link in its metadata, so none is shown
-    )
-    assert app.source_caption("roof_14.jpg").endswith("Lisans: Pexels License")
-    # the roof_05 entry is exactly the one from before the synthetic-photo commit; roof_03 is no longer listed
-    assert (
-        "| roof_05.jpg | Pexels (İstanbul apartmanları, turuncu kırma kiremit çatı kırpılmış) | Dmitry Limonov | "
-        "Pexels License | TODO: Pexels sayfa linki |"
-    ) in sources
-    assert "| roof_03.jpg |" in sources and "Pexels License | Demo listesinde kullanılmıyor |" in next(
-        line for line in sources.splitlines() if line.startswith("| roof_03.jpg |")
-    )
-    for n in (5, 8, 10, 14):
-        assert f"| roof_{n:02d}.jpg |" in sources
-    for i in range(1, 8):
-        row = next(line for line in sources.splitlines() if line.startswith(f"| synth_0{i}.jpg |"))
-        assert "Google Gemini görüntü modeli, 2026-10-21" in row and "gerçek bir binayı göstermez" in row
-        assert "Erenköy–Suadiye konut dokusuna benzetilerek üretildi" in row

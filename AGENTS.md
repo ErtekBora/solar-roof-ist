@@ -2,7 +2,7 @@
 
 ## Project
 A web app that tells an Istanbul resident whether their roof is suitable for solar panels.
-The user clicks a building on a map and can optionally upload a roof photo. The app returns:
+The user clicks a building on a map and draws roof obstacles on the roof map. The app returns:
 - suitability score (%)
 - installable capacity (kWp)
 - annual production (kWh)
@@ -66,7 +66,6 @@ core/agent.py             Roof Agent (Gemini function calling over core tools)
 yolo_service/             FastAPI app: POST /detect, GET /health, model/*.onnx
 scripts/                  one-off scripts (e.g. build_istanbul_reference.py)
 notebooks/                Kaggle notebooks (ONNX export, validation, solar atlas crop)
-data/demo_images/         real roof photos + SOURCES.md (source, author, license, link)
 data/buildings/             Overture extract with ML height + height_model_report.json
 data/                     demo_buildings.json, istanbul_reference.json, istanbul_gti layer
 tests/                    pytest, one test file per module
@@ -101,8 +100,8 @@ tests/                    pytest, one test file per module
   - If the key is missing, show a friendly Turkish error.
   - Never log, print or display the key.
   - `.streamlit/secrets.toml` must be in .gitignore.
-- **Privacy (KVKK):** uploaded images are processed in memory only and never written to disk. Store no personal data.
-- **Attribution:** always show "© OpenStreetMap katkıcıları · Bina verisi: Overture Maps Foundation (ODbL), Microsoft ML Buildings · Güneş verisi: PVGIS (JRC)". Demo images show their source and license.
+- **Privacy (KVKK):** Store no personal data.
+- **Attribution:** always show "© OpenStreetMap katkıcıları · Bina verisi: Overture Maps Foundation (ODbL), Microsoft ML Buildings · Güneş verisi: PVGIS (JRC)".
 - **No Google Maps / Google Earth imagery** anywhere in the AI pipeline (Terms of Service). Satellite tiles (Esri World Imagery) are DISPLAY ONLY: no image, tile or screenshot is ever sent to Gemini or any model, stored, or analysed; keep the Esri attribution visible.
 - **Numbers never come from an LLM.** Tariff, CO2 factor, installation cost bands and all results come from config or tools. Savings use the EPDK two-tier tariff in `core/calc.py`, valued PER FLAT after the production is split equally among the flats (bill-based when the user gives an average monthly flat bill, a wide fallback range otherwise).
 - **Language:** UI text in Turkish. Code, comments, docstrings and commit messages in English.
@@ -112,18 +111,15 @@ tests/                    pytest, one test file per module
   - Degrade gracefully, lower the confidence and explain why in Turkish.
 
 ## AI architecture (core of the solution)
-The solution is AI-native. Gemini has four roles:
-1. **Perception:** detect the roof surface and obstacles in a roof photo; return JSON boxes (and masks when available).
-2. **Classification:** roof type (flat or pitched) and image view (top-down or oblique). Requested in the same call as perception.
-3. **Roof Agent:** orchestrates the core tools via function calling, handles missing data by stating assumptions, and adjusts confidence.
-4. **Explanation:** a grounded Turkish explanation where every reason is tied to a metric.
+The solution has two AI components:
+1. **Building height estimate:** LightGBM, precomputed on Kaggle into the `height_ml_m` column (the app only reads it).
+2. **Explanation (Gemini):** a grounded Turkish explanation where every reason is tied to a metric.
 
 Rules:
-- YOLOE (via yolo_service) is a second, independent perception model. `core/fusion.py` marks detections confirmed by both models.
 - The agent and the explainer NEVER invent numbers. `explain.py` checks every number in the text against the tool outputs; on mismatch it retries once, then falls back to a template.
 - Log every tool call. Show the log in a collapsible "YZ'nin adımları" section.
 - Model names live in config only:
-  - `VISION_MODEL` and `AGENT_MODEL`: Flash class
+  - `AGENT_MODEL`: Flash class
   - `EXPLAIN_MODEL`: Flash-Lite class
 
   Verify current model IDs in the Gemini API docs.

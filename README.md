@@ -1,7 +1,7 @@
 # İstanbul Çatı GES Uygunluk Aracı
 
 Istanbul Rooftop Solar Suitability Tool (GreenTech / COP31, Task 3 "Build and Show").
-A resident clicks a building on a map and optionally uploads a roof photo; the app estimates
+A resident clicks a building on a map and draws roof obstacles on the roof map; the app estimates
 suitability, installable capacity (kWp), annual production, savings, CO2 reduction, shading and
 confidence, with an AI-written Turkish explanation. Built only from open data and AI.
 
@@ -29,7 +29,6 @@ streamlit run app.py
 - Building data: © OpenStreetMap contributors and Microsoft ML Buildings, ODbL, via Overture Maps Foundation; building heights without a tag are an ML estimate (LightGBM trained on this data, no GlobalBuildingAtlas data)
 - Solar data: PVGIS v5.3, European Commission JRC
 - Satellite map tiles (display only, never sent to a model, stored or analysed): Esri World Imagery — "Tiles © Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community"
-- Roof photo demo set: Roboflow rooftop1 (CC BY 4.0), RID / TUM (research use), Wikimedia Commons (CC licenses); each file is listed in `data/demo_images/SOURCES.md`
 - Irradiation layer: Global Solar Atlas (CC BY 4.0)
 - CO2 factor: ETKB TUESEF 2021; usable-area ratio: Ember; tariff: EPDK (AG tek terim mesken, 2026-04-04)
 

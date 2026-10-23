@@ -542,7 +542,7 @@ def test_drawn_obstacles_replace_the_reason_but_never_raise_confidence_above_ort
     r = analyze(structure="pitched", obstacle_ratio=None, image_view=None, drawn={"count": 1, "area_m2": 2.0, "marked": True})
     assert r["guven_seviyesi"] == "Orta" and "Engeller kullanıcı tarafından işaretlendi." in r["guven_nedenleri"]
     assert not any("ortalama orana göre" in x for x in r["guven_nedenleri"])
-    assert "Çatı fotoğrafı yükleyin." not in r["guven_iyilestirme"]
+    assert "Engelleri haritada çizin." not in r["guven_iyilestirme"]
     assert r["cizilen_engel_sayisi"] == 1 and r["cizilen_engel_alani_m2"] == 2.0
     plain = analyze(structure="pitched", obstacle_ratio=None, image_view=None)
     assert plain["cizilen_engel_sayisi"] is None and plain["guc_kaynagi"] == "ortalama"

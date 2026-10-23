@@ -503,6 +503,19 @@ def test_imagery_tips_are_replaced_by_the_standard_tip(tip):
     assert "uydu çanağı" in explain.sanitize_tips("- 2 uydu çanağını taşıyın.")
 
 
+def test_photo_upload_tips_are_replaced_by_the_drawing_tip():
+    for tip in (
+        "- Çatıya çıkıp fotoğraf yükleyin.",
+        "- Çatınızın fotoğrafını yükleyin.",
+        "- Bize bir çatı fotoğrafı gönderin.",
+        "- Daha net bir fotoğraf ekleyin.",
+    ):
+        out = explain.sanitize_tips(f"Karar\nParagraf\n{tip}\n- Daire sayısını girin.")
+        assert tip not in out and "- " + explain.PHOTO_OR_DRAW_TIP in out and "- Daire sayısını girin." in out, tip
+    assert "fotoğraf" not in explain.PHOTO_OR_DRAW_TIP and "haritaya çizin" in explain.PHOTO_OR_DRAW_TIP
+    assert "Çatıda fotoğraf" in explain.sanitize_tips("Çatıda fotoğraf yükleyin.")  # only '-' tips are filtered
+
+
 def test_template_fallback_and_gemini_text_never_suggest_imagery(result, detection):
     text = build_fallback_explanation(result, None, False)
     assert not any(explain._BAD_TIP_RE.search(explain._tr_lower(ln)) for ln in text.splitlines() if ln.startswith("-"))

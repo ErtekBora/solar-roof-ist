@@ -3,18 +3,17 @@
 ## 1. Problem and objective
 Istanbul has a large rooftop solar potential that is almost unused. The main barrier is an awareness gap: residents do not know if their roof is suitable.
 
-Objective: given a building in Istanbul (and optionally a roof photo), produce a trustworthy, explainable suitability assessment in seconds, using only open data and AI. No physical data collection.
+Objective: given a building in Istanbul, produce a trustworthy, explainable suitability assessment in seconds, using only open data and AI. No physical data collection.
 
 **Product goal (Bina modu, the unit is the APARTMENT BUILDING):** flat owners in an apartment building decide together to install ONE rooftop PV system, pay once, and share the production EQUALLY among all flats to cut their electricity bills. The building manager (or any resident) clicks the building on the map; the app uses all available data and asks the minimum. There is no single-flat framing anywhere in the UI. Public and institutional buildings are out of scope. See section 6b.
 
 ## 2. User flow
 1. User opens the app and sees a map of Istanbul (centre 40.9720, 29.0760, zoom 15, with the covered Erenköy / Suadiye / Göztepe area outlined).
 2. User clicks a building (Prototype+) or a location plus a manual roof area (Demo).
-3. The user picks ONE obstacle source: draw on the roof map (default), analyse their own roof photo, or try a sample photo from `data/demo_images/` (shown only to demonstrate the AI; never part of the calculation).
-4. Steps in the main area after a building is found (see section 6b): (a) building summary (footprint, setback area, floors/height and its source); (b) "Daire sayısı" pre-filled with the estimate, "Tahmini — farklıysa düzeltin"; (c) the single obstacle-source selector "Çatı engelleri nereden gelsin?" (see section 6c, "One obstacle source"); (d) optional: Çatı yapısı (+ "Düz teras payı" slider, pre-filled from the photo) and the average monthly flat bill; (e) "Hesapla" and the results. The sidebar only holds "Sıfırla", help and the attribution. Only the bill survives a new map click; "Sıfırla" clears it too.
+3. The user draws roof obstacles on the roof map (the only obstacle source).
+4. Steps in the main area after a building is found (see section 6b): (a) building summary (footprint, setback area, floors/height and its source); (b) "Daire sayısı" pre-filled with the estimate, "Tahmini — farklıysa düzeltin"; (c) optional: Çatı yapısı (+ "Düz teras payı" slider) and the average monthly flat bill; (d) "Hesapla" and the results. The sidebar only holds "Sıfırla", help and the attribution. Only the bill survives a new map click; "Sıfırla" clears it too.
 5. The app shows:
    - building cards (kWp, kWh, CO2, total installation cost range) and per-flat cards (one-time cost, annual savings, payback, bill coverage), plus score and confidence
-   - detection overlay on the photo
    - charts: shading heatmap, monthly production, horizon
    - the AI explanation
    - a collapsible "YZ'nin adımları" panel with the tool-call log (MVP)
@@ -26,7 +25,6 @@ Objective: given a building in Istanbul (and optionally a roof photo), produce a
 | Production, irradiation, losses | PVGIS v5.3 `PVcalc` | JRC, free, server-side |
 | Terrain horizon | PVGIS `printhorizon` | resampled to 72 values |
 | Sun position, clear-sky irradiance | pvlib (local) | Haurwitz clear-sky model (zenith only) |
-| Roof photos | user upload; demo set from Roboflow rooftop1 (CC BY 4.0), RID / TUM (research use), Wikimedia Commons (CC licenses) | NO synthetic images. Every demo file is listed in `data/demo_images/SOURCES.md` |
 | City irradiation layer | Global Solar Atlas GTI/GHI GeoTIFF (CC BY 4.0), cropped to Istanbul on Kaggle and exported as PNG + bounds JSON | display layer only |
 | Istanbul reference yield | `scripts/build_istanbul_reference.py`: PVGIS optimal at Fatih, Kadıköy, Beşiktaş, Bakırköy, Üsküdar → mean saved to `data/istanbul_reference.json` | never hard-code an invented value |
 | CO2 factor | ETKB TUESEF 2021, 0.6345 tCO2/MWh | config constant |
@@ -70,15 +68,7 @@ Objective: given a building in Istanbul (and optionally a roof photo), produce a
 
 ### Gemini API (google-genai)
 - `client = genai.Client(api_key=get_gemini_api_key())`
-- Perception: `generate_content` with image + prompt and `response_mime_type="application/json"`.
-- `box_2d` = [ymin, xmin, ymax, xmax], normalized 0–1000.
 - Agent: function calling with the tools in section 5. Use automatic function calling or a manual loop, whichever lets us log each call.
-- Cache perception results by image hash.
-
-### YOLO service (ours)
-- `POST {YOLO_URL}/detect` (multipart image) → `[{"label", "confidence", "box": [x1, y1, x2, y2]}]` in pixels
-- `GET {YOLO_URL}/health`
-- Timeout 60 s. On any failure return `None` and continue with Gemini only.
 
 ## 5. Tools (pure functions in core/, each unit-tested)
 | Tool | Signature (indicative) | Returns |
@@ -86,12 +76,11 @@ Objective: given a building in Istanbul (and optionally a roof photo), produce a
 | get_building | `find_building(index, lat, lon)` | `{status, message, building: {id, polygon, area_m2, setback_polygons, setback_area_m2, height_m, height_source, data_source}, neighbours[] with distance_m}` |
 | compute_horizon | `compute_horizon(target, neighbours, terrain72=None)` | `{horizon72, main_shading_direction, max_angle_deg}` |
 | get_solar_yield | `get_solar_yield(lat, lon, horizon72=None)` | `{ideal: {...}, shaded: {...}, angle, aspect}` |
-| detect_roof_objects | `detect_roof_objects(image_bytes)` | `{roof_type, image_view, roof_area_px, obstacles[], obstacle_ratio, sources: [gemini, yolo]}` |
 | analyze_building | `analyze_building(roof_area_m2, usable_base_area_m2, obstacle_ratio, image_view, structure, flat_share_pct, n_flats, n_flats_estimated, bill_tl, flat_solar, faces)` (`core/building_mode.py`; replaces the removed single-roof `compute_capacity`) | all result numbers (sections 6 and 6b) |
 | run_scenario | `run_scenario(base_result, change)`, e.g. "move water tanks" → obstacle_ratio reduced | new numbers + delta |
 | optimize_layout | `core/layout.place_panels(target_m, mount, tilt_deg, azimuth_deg, lat, obstacles)` / `layout_model(model, ...)` | `{panels: (n, 4, 2) metric corners in row order, count, orientation, row_pitch_m, depth_m}` per segment |
 
-**Panel layout (`core/layout.py`, pure geometry, no LLM):** see section 6c "Çatı görünümü". The LLM never places panels or produces panel counts. Panel size and power are config assumptions shown in the "Varsayımlar" box: `PANEL_LENGTH_M = 1.72`, `PANEL_WIDTH_M = 1.13`, `PANEL_KWP = 0.40`. Photo obstacles are not geo-referenced to the building, so they are never placed on the map; they only change the numeric usable share.
+**Panel layout (`core/layout.py`, pure geometry, no LLM):** see section 6c "Çatı görünümü". The LLM never places panels or produces panel counts. Panel size and power are config assumptions shown in the "Varsayımlar" box: `PANEL_LENGTH_M = 1.72`, `PANEL_WIDTH_M = 1.13`, `PANEL_KWP = 0.40`.
 
 **Horizon ray-casting:**
 - For each neighbour, compute the azimuth from the target centroid to each neighbour vertex (and densified edge points).
@@ -160,14 +149,13 @@ Objective: given a building in Istanbul (and optionally a roof photo), produce a
 
 In the Demo stage (no building data yet), confidence depends on the photo only: top-down = Orta, oblique or no photo = Düşük.
 
-**Building mode confidence** (section 6b): same base as P1 below (polygon or top-down photo → Orta, otherwise Düşük); roof structure "Bilmiyorum" drops one level; a user-set Karma counts as known; a pitched face whose PVGIS call failed (and that the chosen structure uses) drops one level; never below Düşük. Obstacles drawn on the roof view (or "Engel yok, çatı boş") replace the photo/"ortalama varsayım" reason with "Engeller kullanıcı tarafından işaretlendi" and drop the photo hint, but never raise the level: Yüksek stays unreachable until neighbour shading exists (P2). Hints may include "Daire sayısını kontrol edin", "Ortalama daire faturasını girin", "Çatı yapısını seçin", "Çatı fotoğrafı yükleyin". Flat count and bill do not change the level.
+**Building mode confidence** (section 6b): same base as P1 below (polygon or top-down photo → Orta, otherwise Düşük); roof structure "Bilmiyorum" drops one level; a user-set Karma counts as known; a pitched face whose PVGIS call failed (and that the chosen structure uses) drops one level; never below Düşük. Obstacles drawn on the roof view (or "Engel yok, çatı boş") replace the photo/"ortalama varsayım" reason with "Engeller kullanıcı tarafından işaretlendi" and drop the photo hint, but never raise the level: Yüksek stays unreachable until neighbour shading exists (P2). Hints may include "Daire sayısını kontrol edin", "Ortalama daire faturasını girin", "Çatı yapısını seçin", "Engelleri haritada çizin". Flat count and bill do not change the level.
 
 **Prototype P1 confidence** (only inputs that change a shown result count; replaces the height-based rule above until P2):
 - building polygon (with or without a usable top-down photo) → Orta; manual area without photo → Düşük; manual area with a top-down photo → Orta; Yüksek stays unreachable until P2 neighbour shading.
 - roof type "Bilmiyorum" drops one level (not below Düşük).
 - building height and the bill do NOT affect confidence in P1 (height is shown as information; the empty-bill case is labelled on the TL card only). TODO P2: height joins the confidence.
-- the UI lists only actions that would improve the result (top-down photo, roof type, a bill for the TL card).
-- a bundled sample photo is never part of the calculation (it has its own "YZ ile analiz et" button inside the sample section); a user-uploaded photo is assumed to show the clicked building.
+- the UI lists only actions that would improve the result (drawn obstacles, roof type, a bill for the TL card).
 
 Orientation also adds a reason (Prototype+):
 - `yon_kaynagi` = `"user"` or `"osm_tag"` → positive reason ("çatı yönü biliniyor")
@@ -184,8 +172,8 @@ Added after the Prototype P1 work; the unit is the apartment building. Pure, sep
 **Inputs (sidebar, stable widget keys, always rendered).**
 - *Daire sayısı* (N, min 1): pre-filled `floors = num_floors if known else max(1, round(height_m / 3))`; `N = max(1, round(floors × footprint_area_m2 / FLAT_GROSS_AREA_M2))`, `FLAT_GROSS_AREA_M2 = 120` (assumption: gross area per flat including walls and stairs). Shown as "Tahmini (kat sayısı × taban alanı ÷ 120 m²) — lütfen kontrol edin" until edited. N is clamped to ≥ 1 in every function that divides by it.
 - *Ortalama aylık daire faturası (TL)*: optional, no default. No installation quote and no common-area bill are asked.
-- *Çatı yapısı*: Tamamen düz / Tamamen eğimli / Karma (teras + eğimli) / Bilmiyorum (default). Karma shows the slider "Düz teras payı (%)" (0–100, step 5, default 50); a terrace drawn on the roof view replaces the slider value (flat share = terrace plan ÷ (terrace + faces)). "Tamamen eğimli" and Karma show *Eğimli çatı tipi*: "Kırma (4 yüz)" (default, the most common pitched roof in the pilot area) / "Beşik (2 yüz)"; the choice is mirrored in a plain session key so the "Bilmiyorum" extremes use it while the widget is hidden; it resets to Kırma for a new building. A roof photo may pre-select flat / pitched / Karma at 50 % but never "Bilmiyorum"; a bundled demo photo is never applied to a real building.
-- Flow: the optional inputs and "Hesapla" are available as soon as a building is selected (no "continue" step); the obstacle source restarts at "Haritada çizerek" for every new building. Widgets of hidden steps lose their state, so the bill is mirrored in a plain session key and restored before its widget is created.
+- *Çatı yapısı*: Tamamen düz / Tamamen eğimli / Karma (teras + eğimli) / Bilmiyorum (default). Karma shows the slider "Düz teras payı (%)" (0–100, step 5, default 50); a terrace drawn on the roof view replaces the slider value (flat share = terrace plan ÷ (terrace + faces)). "Tamamen eğimli" and Karma show *Eğimli çatı tipi*: "Kırma (4 yüz)" (default, the most common pitched roof in the pilot area) / "Beşik (2 yüz)"; the choice is mirrored in a plain session key so the "Bilmiyorum" extremes use it while the widget is hidden; it resets to Kırma for a new building.
+- Flow: the optional inputs and "Hesapla" are available as soon as a building is selected (no "continue" step). Widgets of hidden steps lose their state, so the bill is mirrored in a plain session key and restored before its widget is created.
 - Persistence: only the bill persists across map clicks. A different building id re-estimates N, resets the structure to "Bilmiyorum" and the slider to 50, set in `st.session_state` before the widgets are created. No per-building edits are stored. "Sıfırla" clears all of it including the bill. Structure, slider, N and bill changes recompute from the session state with no PVGIS call.
 
 **Roof segments and capacity.** Usable PLAN area (setback + usable-share/photo logic as before) is split into a flat segment (plan × flat share) and a pitched segment (plan × (1 − flat share)).
@@ -220,9 +208,9 @@ Added after the Prototype P1 work; the unit is the apartment building. Pure, sep
 ## 6c. Çatı görünümü (roof view)
 Shown for buildings selected on the map (a footprint is required; the manual-area flow has no roof view), in ONE fixed place: after the building info and the inputs, directly above "Hesapla" (exactly one roof map is ever rendered). Before "Hesapla" it shows the Esri imagery, footprint outline, setback line, alignment controls and drawing tools, no panels; drawing and offset changes only update the stored state (no PVGIS call, no evaluation) and "Hesapla" uses them. After "Hesapla" the same map adds panels, dropped faces and the label, and drawing changes recompute from the cached yields as before.
 
-**Imagery alignment (display only).** On tall buildings off-nadir imagery shows the roof displaced from the OSM footprint. Visibility: the alignment block exists only in the drawing source, inside a collapsed `st.expander` with the FIXED label "Çerçeveyi çatıya hizala (yüksek binalarda gerekir)" (a changing label would recreate and collapse it); a non-zero offset shows "Kaydırma: X m D, Y m K" directly above it; while click-to-align is active its caption and "İptal" are shown outside the expander, right above the map. The photo and sample sources render no alignment controls (the stored offset still moves the overlays). "Çerçeveyi çatıya hizala": arrow buttons move every overlay (footprint, setback, faces, panels, terrace, obstacles, label, map centre) by 1 m or 5 m per click ("↑↓←→" and "5 m ↑/↓/←/→"), clamped to ±30 m per axis, with "Sıfırla" and the text "Kaydırma: 3 m D, 5 m K". The offset is kept in the per-building drawings state (reset with a new building). Overlays are translated by +offset in EPSG:32635 before conversion to lat/lon; shapes returned by the map are translated by −offset, so drawings are stored in the footprint frame and no result changes. "Çatıya tıklayarak hizala": while active (caption "Uydu görüntüsünde çatının ortasına bir kez tıklayın.", with "İptal") the roof map has no Draw toolbar and also returns `last_clicked`; the next click sets offset = clicked point − footprint centroid (EPSG:32635), rounded to 1 m and clamped to ±30 m, and the mode turns off. A repeated identical click is ignored; a click never creates, changes or deletes drawings. An offset change bumps the map generation without touching stored shapes. When non-zero, the breakdown and report add "Görüntü hizalama kaydırması: X m doğu, Y m kuzey (yalnızca gösterim)".
+**Imagery alignment (display only).** On tall buildings off-nadir imagery shows the roof displaced from the OSM footprint. Visibility: the alignment block sits inside a collapsed `st.expander` with the FIXED label "Çerçeveyi çatıya hizala (yüksek binalarda gerekir)" (a changing label would recreate and collapse it); a non-zero offset shows "Kaydırma: X m D, Y m K" directly above it; while click-to-align is active its caption and "İptal" are shown outside the expander, right above the map. "Çerçeveyi çatıya hizala": arrow buttons move every overlay (footprint, setback, faces, panels, terrace, obstacles, label, map centre) by 1 m or 5 m per click ("↑↓←→" and "5 m ↑/↓/←/→"), clamped to ±30 m per axis, with "Sıfırla" and the text "Kaydırma: 3 m D, 5 m K". The offset is kept in the per-building drawings state (reset with a new building). Overlays are translated by +offset in EPSG:32635 before conversion to lat/lon; shapes returned by the map are translated by −offset, so drawings are stored in the footprint frame and no result changes. "Çatıya tıklayarak hizala": while active (caption "Uydu görüntüsünde çatının ortasına bir kez tıklayın.", with "İptal") the roof map has no Draw toolbar and also returns `last_clicked`; the next click sets offset = clicked point − footprint centroid (EPSG:32635), rounded to 1 m and clamped to ±30 m, and the mode turns off. A repeated identical click is ignored; a click never creates, changes or deletes drawings. An offset change bumps the map generation without touching stored shapes. When non-zero, the breakdown and report add "Görüntü hizalama kaydırması: X m doğu, Y m kuzey (yalnızca gösterim)".
 
-**Imagery rule.** Satellite tiles (Esri World Imagery) are DISPLAY ONLY. No image, tile or screenshot is ever sent to Gemini or any model, stored, or analysed. Everything drawn comes from our own geometry and calculations. The Esri attribution stays visible on the map and in the caption "Uydu görüntüsü yalnızca gösterim içindir; tarihi farklı olabilir ve bina sınırıyla birkaç metre kayabilir." AI analysis runs only on user photos and the CC-BY demo samples.
+**Imagery rule.** Satellite tiles (Esri World Imagery) are DISPLAY ONLY. No image, tile or screenshot is ever sent to Gemini or any model, stored, or analysed. Everything drawn comes from our own geometry and calculations. The Esri attribution stays visible on the map and in the caption "Uydu görüntüsü yalnızca gösterim içindir; tarihi farklı olabilir ve bina sınırıyla birkaç metre kayabilir."
 
 **Map.** A second folium map (st_folium key `roof_view_<gen>`), centred on the building at zoom 19, Esri World Imagery only. Layers: footprint (white outline), 1 m setback (dashed), panels (blue, real size), dropped faces (grey, hatched with our own line geometry, tooltip "Verimsiz yüz — panel konmadı"), user obstacles (red), terrace (green), and a label for the drawn scenario: geometry mode "N panel · N×0,40 kWp · Y kWh/yıl · daire başına ~Z TL/ay"; ratio modes "≈X kWp (ortalama orana göre) · …" or "≈X kWp (fotoğraftaki engel oranına göre) · …" without a panel count. Scroll-wheel zoom is off (`scrollWheelZoom=False`, the +/- buttons stay) so page scrolling is not hijacked. Under the map: "Haritadaki çöp kutusu yalnızca son yeniden çizimden sonraki şekilleri siler; eskiler için 'Son çizimi geri al' veya 'Engelleri temizle'." The "Ölçülen" line says "Engeller: kullanıcı çizimi" or "Engel yok (kullanıcı beyanı)" while a drawing or the statement is active. Interaction isolation: the roof map returns only `all_drawings` (`returned_objects=["all_drawings"]`); it never reads `last_clicked` and never changes the selected building or its inputs. Building selection stays on the main map.
 
@@ -238,10 +226,10 @@ Shown for buildings selected on the map (a footprint is required; the manual-are
 - Karma with a drawn terrace: flat area = terrace.buffer(−0.15) ∩ setback, pitched faces = face − terrace.buffer(+0.15) (0.3 m gap); empty or invalid pieces count as 0 kWp. Karma without a terrace: only the pitched faces are drawn, with "Teras konumu çizilmedi; teras panelleri yalnızca sayısal olarak hesaplandı". "Bilmiyorum": the flat layout is drawn, labelled "düz çatı varsayımıyla".
 - UTM grid convergence (≈1.4° in the pilot area) is ignored for both the panel rows and the face azimuths; its effect on yield is negligible.
 
-**One obstacle source.** The radio "Çatı engelleri nereden gelsin?" holds exactly one active source: (a) "Haritada çizerek (önerilen)" (default): drawn obstacles / "Engel yok", else the average ratio, drawing tools visible; (b) "Kendi çatı fotoğrafımla (YZ analizi)": uploader + photo analysis section, the calculation uses the photo ratio, drawing tools hidden ("Fotoğraf modunda engeller fotoğraftan alınır; çizmek için 'Haritada çizerek' seçin."), photo-based roof-type suggestions may pre-fill inputs only here, alignment controls stay; (c) "Örnek fotoğrafla YZ'yi dene (hesaba katılmaz)": the eight curated samples (synth_01…07, AI-generated with the Google Gemini image model on 2026-10-21, each captioned "YZ ile üretilmiş sentetik örnek … Gerçek bir bina değildir" with a "Sentetik" badge, then the real photo roof_05 with its source/author/licence caption (no link when its metadata has none); the synthetic ones show only their own caption; roof_03/08/10/14 stay on disk but are not listed) as "Örnek 1…8" (nothing selected by default) are shown at once and "Bu fotoğraf seçtiğiniz binaya ait değildir; YZ'nin çatıda neleri bulduğunu göstermek içindir."; the button "YZ ile analiz et" runs Gemini only when pressed (cached per sample) and shows the annotated image, the obstacle table and the roof type as text inside the sample section; a sample never changes any input or result, the calculation uses the average ratio. The data of the inactive sources (drawings, offset, terrace, photo analysis, the uploaded photo) stays in the state but is ignored, and stored drawings are not rendered. The roof map is always rendered with the same key; while the source is not (a) its drawing output is ignored completely (a missing or empty `all_drawings` is never a deletion).
+**Obstacle source.** Obstacles come only from the roof-map drawing: drawn obstacles / "Engel yok", else the average ratio, drawing tools always visible. The roof map is always rendered with the same key.
 
 **Which number wins (priority rule).** Usable capacity: user-drawn obstacles > photo obstacle ratio > average usable-share assumption.
-- No drawing: the numeric kWp (photo or average) stays the result and NO panel rectangles are drawn (a ratio gives a kWp, not a layout); the map shows footprint, setback, dropped faces and the label, with the caption "Panel yerleşimini görmek için 'Haritada çizerek' seçip engelleri çizin veya 'Engel yok, çatı boş' deyin." The breakdown/report "Panel" row reads "≈N panel (orandan tahmini; yerleşim için engelleri çizin)". Panels are drawn only in layout mode.
+- No drawing: the numeric kWp (photo or average) stays the result and NO panel rectangles are drawn (a ratio gives a kWp, not a layout); the map shows footprint, setback, dropped faces and the label, with the caption "Panel yerleşimini görmek için engelleri çizin veya 'Engel yok, çatı boş' deyin." The breakdown/report "Panel" row reads "≈N panel (orandan tahmini; yerleşim için engelleri çizin)". Panels are drawn only in layout mode.
 - Obstacles drawn, or "Engel yok, çatı boş": geometry mode, kWp = panel count × 0.40 per segment; the usable share is no longer used; kWh (stored specific yields), cost (`estimate_install_cost`), per-flat discount and payback are recomputed instantly without a PVGIS call; confidence reason as in section 6.
 - Karma needs a terrace for geometry mode: drawn obstacles without a terrace keep the numeric result (obstacles stored, hint "Geometriyle netleştirmek için teras alanını da çizin."); "Engel yok, çatı boş" without a terrace stays numeric with an obstacle ratio of 0 (the photo rule with ratio 0: usable = setback area × (1 − 0)). With a terrace, both parts use geometry.
 - "Bilmiyorum" + geometry: both layouts (100 % flat, 100 % pitched with the selected sub-type) give the range [min, max] of panel count × 0.40 and the matching kWh/cost/discount/payback ranges; the map shows the flat layout with "düz çatı varsayımıyla; çatı yapısını seçerseniz sonuç tek değere iner".
@@ -255,22 +243,10 @@ Shown for buildings selected on the map (a footprint is required; the manual-are
 - Numeric capacity matches the geometry: the pitched plan area (after the usable-share/photo rule) is distributed to the faces in proportion to their intersected areas; face kWp = plan ÷ cos30° ÷ 5.5. The 80 % drop rule applies per face (each face's shaded E_y vs the flat segment's shaded E_y); a dropped face contributes 0 kWp, 0 kWh, 0 cost and gets no panels.
 
 ## 7. AI components
-- **Perception prompt:**
-  - find "roof surface" plus obstacles: water tank, air conditioner unit, chimney, solar panel, satellite dish, skylight, other
-  - return JSON with label, `box_2d`, optional mask, `roof_type` (flat or pitched), `image_view` (top-down or oblique)
-- **Single class list:** define `OBSTACLE_CLASSES` once in `core/config.py`: `["water tank", "air conditioner unit", "chimney", "solar panel", "satellite dish", "skylight"]`.
-  - The Gemini prompt, the YOLOE `set_classes` call on Kaggle and `fusion.py` all use this exact list.
-  - Gemini may additionally return `"other"`. YOLO never returns it, so `"other"` detections can never be "doğrulandı"; they are always "kontrol et".
-  - `"roof surface"` is not an obstacle class; it is only used for the roof area.
-- **Coordinate conversion:** `vision.py` must return the image width and height with its result. Gemini `box_2d` [ymin, xmin, ymax, xmax] (0–1000) → pixels: x = xmin / 1000 × width, y = ymin / 1000 × height (same for max). YOLO boxes are already in pixels [x1, y1, x2, y2].
-- **Fusion:** match Gemini and YOLO boxes by IoU ≥ 0.3 (after converting both to pixels).
-  - Only boxes with the same label are matched, after normalizing to `OBSTACLE_CLASSES`.
-  - matched → "doğrulandı"
-  - single-model → "kontrol et"
-  - The UI shows an editable confirmation table.
+AI scope: (1) the LightGBM building height estimate (precomputed on Kaggle, the app only reads `height_ml_m`) and (2) the Gemini text explainer below.
 - **Roof Agent:**
   - system prompt: Turkish-speaking solar advisor; must call tools for every number; must state assumptions; never ask for personal data
-  - typical order: get_building → compute_horizon → get_solar_yield → detect_roof_objects (if photo) → optimize_layout (per scenario) → analyze_building
+  - typical order: get_building → compute_horizon → get_solar_yield → optimize_layout (per scenario) → analyze_building
   - **scenario role (MVP):**
     - the agent decides which layout scenarios to run: flat → optimal tilt vs low tilt; pitched → which faces to use
     - it calls optimize_layout once per scenario and compares panel count, kWp and annual kWh
@@ -292,9 +268,8 @@ Shown for buildings selected on the map (a footprint is required; the manual-are
   - colour = lost clear-sky irradiance (Haurwitz); Altair heatmap
 - **Monthly production:** ideal vs shaded (Altair grouped bars).
 - **Horizon chart:** 72-value profile with sun paths for 21 Jun and 21 Dec.
-- **Photo overlay:** roof (green), obstacles (red), confirmed vs check labels.
 - **"Varsayımlar ve kaynaklar" box (Demo-2 onwards):** a compact table under the results. Every number shown is tagged with one of:
-  - "Ölçüm/veri" (PVGIS, building footprint, photo detection)
+  - "Ölçüm/veri" (PVGIS, building footprint)
   - "Kullanıcı girdisi"
   - "Varsayım" (0.276, 0.85, SETBACK_M, tilt defaults, self-consumption range, tariff tax factor, CO2 factor)
   - "YZ tahmini" (ML building height)
@@ -328,8 +303,6 @@ Building mode adds: `cati_yapisi, duz_pay_yuzde, daire_sayisi, daire_sayisi_tahm
 
 ## 11. Validation (no field data)
 - **A. Synthetic geometry tests** (pytest): horizon angle, area, kWp, score.
-- **B. Detection quality** (Kaggle): recall/precision of Gemini and YOLO on labelled Roboflow rooftop1 (flat roofs) and RID (pitched roofs) samples.
-- **C. Demo-image consistency:** repeated runs on the same image give stable obstacle ratios.
 - **D. Physics sanity:**
   - PVGIS vs pvlib order of magnitude
   - specific yield within ~1,100–1,450 kWh/kWp for Istanbul

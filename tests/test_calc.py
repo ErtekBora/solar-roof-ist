@@ -55,7 +55,7 @@ def test_confidence_ignores_the_bill_and_flat_count():
 def test_improvement_hints_list_only_what_would_help():
     assert building_confidence("top-down", True, True, has_bill=True)[2] == []
     worst = building_confidence(None, False, False, flats_estimated=True)[2]
-    assert worst == ["Daire sayısını kontrol edin.", "Ortalama daire faturasını girin.", "Çatı yapısını seçin.", "Çatı fotoğrafı yükleyin."]
+    assert worst == ["Daire sayısını kontrol edin.", "Ortalama daire faturasını girin.", "Çatı yapısını seçin.", "Engelleri haritada çizin."]
 
 
 # ------------------------------------------------------------------ two-tier tariff
