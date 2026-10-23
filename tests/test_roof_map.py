@@ -58,20 +58,20 @@ def test_the_draw_toolbar_still_exists_on_the_static_map():
 
 
 def test_fit_bounds_is_called_before_the_zoom_sigma_script():
-    js = _script(app.build_roof_map([40.97, 29.07], bounds=BOUNDS, enhance=(imagery_fx.STANDARD, 1.0)))
+    js = _script(app.build_roof_map([40.97, 29.07], bounds=BOUNDS, enhance=True))
     assert 0 <= js.index(".fitBounds(") < js.index("roofFxSigma")
     assert "whenReady(function () { setTimeout(roofFxSigma, 0); })" in js and '.on("zoomend", roofFxSigma)' in js
-    m = app.build_roof_map([40.97, 29.07], bounds=BOUNDS, enhance=(imagery_fx.STANDARD, 1.0))
+    m = app.build_roof_map([40.97, 29.07], bounds=BOUNDS, enhance=True)
     m.render()
     html = _get_html(m)
-    assert 'id="roof-fx-standard"' in html and ".roof-esri { filter: url(#roof-fx-standard); }" in html
+    assert 'id="roof-fx"' in html and ".roof-esri { filter: url(#roof-fx); }" in html
 
 
-def test_orijinal_and_no_enhancement_add_no_filter_to_the_map():
-    for enhance in (None, (imagery_fx.ORIGINAL, 1.0)):
-        m = app.build_roof_map([40.97, 29.07], bounds=BOUNDS, enhance=enhance)
-        m.render()
-        assert "<filter" not in _get_html(m) and "roofFxSigma" not in _get_map_string(m)
+def test_enhancement_off_adds_no_filter_to_the_map():
+    m = app.build_roof_map([40.97, 29.07], bounds=BOUNDS, enhance=False)
+    m.render()
+    html = _get_html(m)
+    assert "<filter" not in html and "filter: url" not in html and "roofFxSigma" not in _get_map_string(m)
 
 
 def test_the_first_map_gets_no_filter_and_stays_navigable():
@@ -108,19 +108,29 @@ def test_rebuild_bumps_the_generation_and_keeps_every_shape():
 
 # --------------------------------------------------------------- AppTest flows
 
-def test_mode_strength_and_offset_changes_keep_drawings_and_the_fitted_view(mocked, roof_figs, sample_index, building_point):
+def _fx_toggle(at):
+    return next(t for t in at.toggle if t.label == "Görüntü iyileştirme")
+
+
+def _has_filter(fig):
+    fig.render()
+    return "<filter" in _get_html(fig)
+
+
+def test_enhancement_toggle_and_offset_changes_keep_drawings_and_the_fitted_view(mocked, roof_figs, sample_index, building_point):
     calls, box, figs = roof_figs
     at = _run_with_point(building_point)
-    assert _widget(at.radio, "Görüntü iyileştirme").value == imagery_fx.STANDARD
+    assert _fx_toggle(at).value is True and _has_filter(figs[-1][0])  # on by default
     assert imagery_fx.CAPTION in [c.value for c in at.caption]
+    assert not [r for r in at.radio if r.label == "Görüntü iyileştirme"] and not [x for x in at.slider if x.label == "Şiddet"]
     _draw_one(at, box, sample_index, building_point)
     stored, bounds = _obstacles(at), _bounds(at)
     for change in (
-        lambda: _widget(at.radio, "Görüntü iyileştirme").set_value(imagery_fx.EDGES).run(),
-        lambda: _widget(at.slider, "Şiddet").set_value(1.7).run(),
+        lambda: _fx_toggle(at).set_value(False).run(),
         lambda: _button(at, "5 m →").click().run(),
-        lambda: _widget(at.radio, "Görüntü iyileştirme").set_value(imagery_fx.ORIGINAL).run(),
+        lambda: _fx_toggle(at).set_value(True).run(),
         lambda: _button(at, "Sıfırla").click().run(),
+        lambda: _fx_toggle(at).set_value(False).run(),
     ):
         gen = _roof_draw(at)["gen"]
         change()
@@ -129,7 +139,7 @@ def test_mode_strength_and_offset_changes_keep_drawings_and_the_fitted_view(mock
         assert _roof_draw(at)["gen"] > gen  # a fresh map generation: never read as a deletion
     fig, kwargs = figs[-1]
     assert "center" not in kwargs and "zoom" not in kwargs
-    assert at.session_state[app.KEY_FX_MODE] == imagery_fx.ORIGINAL and at.session_state[app.KEY_FX_STRENGTH] == 1.7
+    assert at.session_state[app.KEY_FX_ON] is False and not _has_filter(fig)  # off: the original image, no filter
 
 
 def test_fit_view_button_refits_to_the_shifted_frame_once(mocked, roof_figs, sample_index, building_point):
@@ -181,61 +191,3 @@ def test_flat_roof_notes_read_as_sentences():
     assert app.NOTE_FLAT_ASSUMED_GEOMETRY == (
         "Panel yerleşimi düz çatı varsayımıyla gösteriliyor; çatı yapısını seçerseniz sonuç tek değere iner."
     )
-
-
-# ------------------------------------------------------- drawing aids (display only)
-
-def test_grid_lines_are_1_m_apart_and_clipped_to_the_view(sample_index, building_point):
-    footprint = shapely.from_wkb(_roof_inputs(sample_index, building_point)["footprint_wkb_m"])
-    bounds = app.roof_fit_bounds(footprint)
-    (s, w), (n, e) = bounds
-    xs, ys = drawings.to_metric([w, e, e, w], [s, s, n, n])
-    view = shapely.Polygon(list(zip(xs, ys)))
-    lines = app.grid_lines_m(bounds)
-    assert lines and all(view.buffer(1e-6).covers(line) for line in lines)
-    verticals = sorted({round(line.coords[0][0], 6) for line in lines if line.coords[0][0] == line.coords[-1][0]})
-    assert all(b - a == pytest.approx(1.0) for a, b in zip(verticals, verticals[1:]))
-
-
-def test_sample_panel_has_the_configured_size_at_the_shifted_centroid_along_the_longest_edge(sample_index, building_point):
-    from core.config import PANEL_LENGTH_M, PANEL_WIDTH_M
-
-    footprint = shapely.from_wkb(_roof_inputs(sample_index, building_point)["footprint_wkb_m"])
-    panel = app.sample_panel_m(footprint, (3.0, -2.0))
-    assert panel.area == pytest.approx(PANEL_LENGTH_M * PANEL_WIDTH_M)
-    shifted = footprint.centroid
-    assert (panel.centroid.x, panel.centroid.y) == pytest.approx((shifted.x + 3.0, shifted.y - 2.0))
-    ring = list(footprint.exterior.coords)
-    (x0, y0), (x1, y1) = max(zip(ring, ring[1:]), key=lambda edge: ((edge[1][0] - edge[0][0]) ** 2 + (edge[1][1] - edge[0][1]) ** 2))
-    (a0, b0), (a1, b1) = panel.exterior.coords[0], panel.exterior.coords[1]  # first side is the long one
-    cross = (x1 - x0) * (b1 - b0) - (y1 - y0) * (a1 - a0)
-    assert abs(cross) < 1e-6 * max(1.0, abs(x1 - x0) + abs(y1 - y0))  # parallel to the longest edge
-    assert shapely.Point(a0, b0).distance(shapely.Point(a1, b1)) == pytest.approx(PANEL_LENGTH_M)
-
-
-def test_aids_are_off_by_default_and_never_become_drawings(mocked, roof_figs, sample_index, building_point):
-    calls, box, figs = roof_figs
-    at = _run_with_point(building_point)
-    assert not isinstance(figs[-1][1]["feature_group_to_add"], list)  # off: the single overlay as before
-    _draw_one(at, box, sample_index, building_point)
-    _button(at, "Hesapla").click().run()
-    before = at.session_state["result"]
-    stored = _obstacles(at)
-    for label in ("1 m ızgara", "Örnek panel"):
-        next(t for t in at.toggle if t.label == label).set_value(True).run()
-        assert not at.exception
-    groups = figs[-1][1]["feature_group_to_add"]
-    assert isinstance(groups, list) and len(groups) == 2
-    aids = groups[1]
-    assert aids.layer_name == "Yardımcı çizgiler"
-    import folium
-
-    n_layers = sum(isinstance(c, (folium.PolyLine, folium.Polygon)) for c in aids._children.values())
-    m = app.build_roof_map([40.97, 29.07])
-    aids_js = __import__("streamlit_folium")._get_feature_group_string(aids, map=m, idx=1)
-    assert n_layers > 1 and aids_js.count('"interactive": false') == n_layers  # every aid ignores clicks
-    assert "drawnItems" not in aids_js  # a separate layer, never part of Leaflet.draw's items
-    after = at.session_state["result"]
-    assert _obstacles(at) == stored and after["cizilen_engel_sayisi"] == before["cizilen_engel_sayisi"] == 1
-    assert after["kurulabilir_guc_kwp_aralik"] == pytest.approx(before["kurulabilir_guc_kwp_aralik"])
-    assert after["panel_sayisi_aralik"] == before["panel_sayisi_aralik"]

@@ -1,6 +1,5 @@
 """Streamlit UI (Turkish): Istanbul rooftop solar suitability tool."""
 import logging
-import math
 
 import altair as alt
 import folium
@@ -1095,21 +1094,18 @@ ESRI_NATIVE_ZOOM = 19  # deepest Esri level used; above it tiles are upscaled in
 ROOF_MAP_HEIGHT = 620
 ROOF_TILE_CLASS = "roof-esri"
 FIT_VIEW_LABEL = "Görünümü çerçeveye ortala"
-# display-only imagery enhancement (browser-side SVG filter); the plain keys keep the choice while the map is hidden
-KEY_FX_MODE, KEY_FX_STRENGTH = "roof_fx_mode", "roof_fx_strength"
-KEY_FX_MODE_KEEP, KEY_FX_STRENGTH_KEEP = "_roof_fx_mode_keep", "_roof_fx_strength_keep"
-KEY_AID_GRID, KEY_AID_PANEL = "roof_aid_grid", "roof_aid_panel"  # display-only drawing aids, default off
-GRID_STEP_M = 1.0
+# display-only imagery enhancement (browser-side SVG filter); the plain key keeps the choice while the map is hidden
+KEY_FX_ON, KEY_FX_ON_KEEP = "roof_fx_on", "_roof_fx_on_keep"
 
 
-def build_roof_map(center, draw_tools=True, aligning=False, bounds=None, enhance=None):
+def build_roof_map(center, draw_tools=True, aligning=False, bounds=None, enhance=False):
     """Static part of the roof map: Esri World Imagery (DISPLAY ONLY, attribution kept) and the Draw control
     (rectangle and polygon only; editing off, deleting on). `draw_tools=False` (click-to-align mode) omits the
     toolbar so an alignment click can never add a vertex; `aligning` also shows a crosshair.
 
     The view is static: no dragging, zooming or zoom buttons. With `bounds` ([[s, w], [n, e]]) Leaflet fits the map
-    to them on every build (zoomSnap 0.1, so the same fractional zoom each time). `enhance` = (preset, strength) adds
-    the browser-side SVG filter on the tile layer (core/imagery_fx); None or "Orijinal" adds nothing."""
+    to them on every build (zoomSnap 0.1, so the same fractional zoom each time). `enhance` adds the gentle
+    browser-side SVG filter on the tile layer (core/imagery_fx); False adds nothing."""
     m = folium.Map(
         location=center, zoom_start=ROOF_VIEW_ZOOM, max_zoom=ROOF_MAX_ZOOM, tiles=None, zoom_control=False,
         scroll_wheel_zoom=False, dragging=False, double_click_zoom=False, touch_zoom=False, box_zoom=False,
@@ -1124,8 +1120,8 @@ def build_roof_map(center, draw_tools=True, aligning=False, bounds=None, enhance
     ).add_to(m)
     if bounds is not None:
         m.fit_bounds(bounds, max_zoom=ROOF_MAX_ZOOM, padding=(10, 10))
-    if enhance is not None:  # after fit_bounds: the zoom script must run once the fitted view exists
-        imagery_fx.add_to_map(m, enhance[0], enhance[1], ROOF_TILE_CLASS)
+    if enhance:  # after fit_bounds: the zoom script must run once the fitted view exists
+        imagery_fx.add_to_map(m, ROOF_TILE_CLASS)
     if draw_tools:
         Draw(
             export=False, position="topleft", show_geometry_on_click=False,
@@ -1282,83 +1278,19 @@ def _fit_view_to_frame(building_id, footprint_wkb):
 
 
 def _fx_changed():
-    """Enhancement mode or strength changed: keep the choice and rebuild the map (drawings and view stay)."""
+    """Enhancement switched on/off: keep the choice and rebuild the map (drawings and view stay)."""
     state = st.session_state
-    state[KEY_FX_MODE_KEEP], state[KEY_FX_STRENGTH_KEEP] = state.get(KEY_FX_MODE), state.get(KEY_FX_STRENGTH)
+    state[KEY_FX_ON_KEEP] = state.get(KEY_FX_ON)
     drawings.rebuild(state[KEY_DRAWINGS])
 
 
 def enhancement_control(state):
-    """'Görüntü iyileştirme' preset + 'Şiddet' above the roof map. Returns (preset, strength)."""
-    if state.get(KEY_FX_MODE) not in imagery_fx.PRESETS:  # hidden widgets lose their state: restore it first
-        keep = state.get(KEY_FX_MODE_KEEP)
-        state[KEY_FX_MODE] = keep if keep in imagery_fx.PRESETS else imagery_fx.DEFAULT_PRESET
-    if KEY_FX_STRENGTH not in state:
-        state[KEY_FX_STRENGTH] = imagery_fx.clamp_strength(state.get(KEY_FX_STRENGTH_KEEP, imagery_fx.STRENGTH_DEFAULT))
-    c1, c2 = st.columns([3, 2])
-    preset = c1.radio("Görüntü iyileştirme", imagery_fx.PRESETS, key=KEY_FX_MODE, horizontal=True, on_change=_fx_changed)
-    strength = c2.slider(
-        "Şiddet", min_value=imagery_fx.STRENGTH_MIN, max_value=imagery_fx.STRENGTH_MAX, step=0.1, key=KEY_FX_STRENGTH,
-        on_change=_fx_changed,
-    )
+    """'Görüntü iyileştirme' toggle above the roof map (default on; off shows the original). Returns True when on."""
+    if KEY_FX_ON not in state:  # hidden widgets lose their state: restore it first
+        state[KEY_FX_ON] = state.get(KEY_FX_ON_KEEP, True) is not False
+    on = st.toggle("Görüntü iyileştirme", key=KEY_FX_ON, on_change=_fx_changed)
     st.caption(imagery_fx.CAPTION)
-    return preset, strength
-
-
-def aids_control():
-    """'1 m ızgara' and 'Örnek panel' toggles (display only). Returns (grid, panel)."""
-    c1, c2 = st.columns(2)
-    grid = c1.toggle("1 m ızgara", key=KEY_AID_GRID, help="Ölçek için 1 m aralıklı çizgiler; hesaba katılmaz.")
-    panel = c2.toggle(
-        "Örnek panel", key=KEY_AID_PANEL,
-        help=f"Bir panelin gerçek boyutu ({tr_num(PANEL_LENGTH_M, 2)} × {tr_num(PANEL_WIDTH_M, 2)} m); hesaba katılmaz.",
-    )
-    return grid, panel
-
-
-def grid_lines_m(bounds, step=GRID_STEP_M):
-    """Metric (EPSG:32635) grid lines every `step` m, clipped to the fitted view `bounds` ([[s, w], [n, e]])."""
-    (s, w), (n, e) = bounds
-    xs, ys = drawings.to_metric([w, e, e, w], [s, s, n, n])
-    view = shapely.Polygon(list(zip(xs, ys)))
-    minx, miny, maxx, maxy = view.bounds
-    lines = [shapely.LineString([(x, miny), (x, maxy)]) for x in _steps(minx, maxx, step)]
-    lines += [shapely.LineString([(minx, y), (maxx, y)]) for y in _steps(miny, maxy, step)]
-    return [clipped for clipped in (view.intersection(line) for line in lines) if not clipped.is_empty]
-
-
-def _steps(lo, hi, step):
-    return [i * step for i in range(math.ceil(lo / step), math.floor(hi / step) + 1)]
-
-
-def sample_panel_m(footprint, offset=(0.0, 0.0)):
-    """One panel (PANEL_LENGTH_M x PANEL_WIDTH_M) at the shifted frame's centroid, long side along the footprint's
-    longest exterior edge."""
-    ring = list(max(shapely.get_parts(footprint), key=lambda part: part.area).exterior.coords)
-    (x0, y0), (x1, y1) = max(zip(ring, ring[1:]), key=lambda edge: math.dist(*edge))
-    angle = math.atan2(y1 - y0, x1 - x0)
-    c = drawings.shift_metric(footprint, offset).centroid
-    ux, uy, vx, vy = math.cos(angle), math.sin(angle), -math.sin(angle), math.cos(angle)
-    hl, hw = PANEL_LENGTH_M / 2, PANEL_WIDTH_M / 2
-    return shapely.Polygon([
-        (c.x + sx * hl * ux + sy * hw * vx, c.y + sx * hl * uy + sy * hw * vy) for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1))
-    ])
-
-
-def build_aids_overlay(bounds, footprint, offset, grid, panel):
-    """Separate, non-interactive display layers (never in the Draw feature group, never returned as drawings)."""
-    fg = folium.FeatureGroup(name="Yardımcı çizgiler")
-    layers = []
-    for line in grid_lines_m(bounds) if grid else ():
-        for part in shapely.get_parts(line):
-            layers.append(folium.PolyLine(_metric_ring_latlon(part.coords), color="#ffffff", weight=1, opacity=0.35))
-    if panel:
-        for ring in drawings.polygon_to_latlon(sample_panel_m(footprint, offset)):
-            layers.append(folium.Polygon(ring, color="#facc15", weight=2, dash_array="4", fill=False))
-    for layer in layers:
-        layer.options["interactive"] = False  # folium 0.20 drops interactive=...; Leaflet then ignores clicks on it
-        layer.add_to(fg)
-    return fg
+    return on
 
 
 def alignment_control(draw, building=None):
@@ -1429,17 +1361,13 @@ def roof_view_section(state, building, roof=None, result=None):
         st.button(ALIGN_CANCEL_LABEL, key="align_cancel", on_click=_cancel_align)
     bounds = roof_view_bounds(state, building, footprint)
     enhance = enhancement_control(state)
-    grid, panel = aids_control()
-    overlay = build_roof_overlay(footprint, setback, draw, roof, result)
-    if grid or panel:
-        overlay = [overlay, build_aids_overlay(bounds, footprint, draw["offset"], grid, panel)]
     data = st_folium(
         build_roof_map(
             list(building["centroid"]), draw_tools=not aligning, aligning=aligning, bounds=bounds, enhance=enhance,
         ),
         key=drawings.map_key(draw),
         returned_objects=["all_drawings", "last_clicked"] if aligning else ["all_drawings"],
-        feature_group_to_add=overlay,
+        feature_group_to_add=build_roof_overlay(footprint, setback, draw, roof, result),
         height=ROOF_MAP_HEIGHT, use_container_width=True,
     )
     if aligning:
