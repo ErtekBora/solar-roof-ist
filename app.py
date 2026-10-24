@@ -77,7 +77,7 @@ ALIGN_CAPTION = (
 TR_AXIS_LABEL_EXPR = "replace(format(datum.value, ',.0f'), ',', '.')"
 ROOF_VIEW_CAPTION = (
     "Uydu görüntüsü (Esri World Imagery) yalnızca gösterim içindir; tarihi farklı olabilir ve yüksek binalarda çatı "
-    "birkaç metre kaymış görünebilir. Görüntü hiçbir modele gönderilmez, saklanmaz veya analiz edilmez. "
+    "birkaç metre kaymış görünebilir. Görüntü hiçbir sunucuya veya yapay zekâ modeline gönderilmez ve saklanmaz. "
     + ESRI_ATTRIBUTION
 )
 NOTE_AVERAGE = "Ortalama engel payı düşüldü — engelleri çizerek netleştirin"
@@ -1098,7 +1098,7 @@ ESRI_NATIVE_ZOOM = 19  # deepest Esri level used; above it tiles are upscaled in
 ROOF_MAP_HEIGHT = 620
 ROOF_TILE_CLASS = "roof-esri"
 FIT_VIEW_LABEL = "Görünümü çerçeveye ortala"
-# display-only imagery enhancement (browser-side SVG filter); the plain key keeps the choice while the map is hidden
+# display-only imagery enhancement (browser-side canvas processing); the plain key keeps the choice while the map is hidden
 KEY_FX_ON, KEY_FX_ON_KEEP = "roof_fx_on", "_roof_fx_on_keep"
 
 
@@ -1108,8 +1108,9 @@ def build_roof_map(center, draw_tools=True, aligning=False, bounds=None, enhance
     toolbar so an alignment click can never add a vertex; `aligning` also shows a crosshair.
 
     The view is static: no dragging, zooming or zoom buttons. With `bounds` ([[s, w], [n, e]]) Leaflet fits the map
-    to them on every build (zoomSnap 0.1, so the same fractional zoom each time). `enhance` adds the gentle
-    browser-side SVG filter on the tile layer (core/imagery_fx); False adds nothing."""
+    to them on every build (zoomSnap 0.1, so the same fractional zoom each time). `enhance` adds the browser-side
+    canvas enhancement overlay (core/imagery_fx); False adds nothing. The tile layer loads with crossOrigin
+    "anonymous" so the script's canvas is never tainted."""
     m = folium.Map(
         location=center, zoom_start=ROOF_VIEW_ZOOM, max_zoom=ROOF_MAX_ZOOM, tiles=None, zoom_control=False,
         scroll_wheel_zoom=False, dragging=False, double_click_zoom=False, touch_zoom=False, box_zoom=False,
@@ -1119,14 +1120,15 @@ def build_roof_map(center, draw_tools=True, aligning=False, bounds=None, enhance
     if aligning:
         m.get_root().html.add_child(folium.Element(CROSSHAIR_CSS))
     m.get_root().html.add_child(folium.Element(TILE_SEAM_CSS))
-    folium.TileLayer(
+    tiles = folium.TileLayer(
         tiles=ESRI_TILES_URL, attr=ESRI_ATTRIBUTION, name="Uydu (yalnızca görüntüleme)",
         max_native_zoom=ESRI_NATIVE_ZOOM, max_zoom=ROOF_MAX_ZOOM, class_name=ROOF_TILE_CLASS,
+        cross_origin="anonymous",
     ).add_to(m)
     if bounds is not None:
         m.fit_bounds(bounds, max_zoom=ROOF_MAX_FIT_ZOOM, padding=(10, 10))
-    if enhance:  # after fit_bounds: the zoom script must run once the fitted view exists
-        imagery_fx.add_to_map(m, ROOF_TILE_CLASS)
+    if enhance:  # after fit_bounds: the script must run once the fitted view exists
+        imagery_fx.add_to_map(m, tiles)
     if draw_tools:
         Draw(
             export=False, position="topleft", show_geometry_on_click=False,
