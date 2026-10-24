@@ -72,7 +72,7 @@ def test_canvas_script_runs_after_fit_bounds_inside_when_ready_and_hides_the_esr
     m = app.build_roof_map([40.97, 29.07], bounds=BOUNDS, enhance=True)
     js = _script(m)
     assert 0 <= js.index(".fitBounds(") < js.index("function roofEnhance()")
-    assert js.index("function roofEnhance()") < js.index("whenReady(function () { setTimeout(roofEnhance, 0); });")
+    assert js.index("function roofEnhance()") < js.index("map.whenReady(schedule);")  # after the fit has settled
     tile_name = re.search(r"var (tile_layer_\w+) = L\.tileLayer\(", js).group(1)
     assert f"var tiles = {tile_name};" in js
     html = _get_html(m)
