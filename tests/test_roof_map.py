@@ -49,6 +49,7 @@ def test_rendered_roof_map_is_a_static_fitted_view():
         assert f'"{option}": false' in js, option
     tile = re.search(r"L\.tileLayer\(.*?\);", js).group()
     assert '"className": "roof-esri"' in tile and '"maxNativeZoom": 19' in tile and '"maxZoom": 22' in tile
+    assert '"crossOrigin": "anonymous"' in tile  # cached tiles stay CORS-valid for the enhancement canvas
     assert "Tiles \\u00a9 Esri" in tile  # the Esri attribution is unchanged
 
 
@@ -67,21 +68,22 @@ def test_the_draw_toolbar_still_exists_on_the_static_map():
     assert "L.Control.Draw" in js and '"remove": true' in js
 
 
-def test_fit_bounds_is_called_before_the_zoom_sigma_script():
-    js = _script(app.build_roof_map([40.97, 29.07], bounds=BOUNDS, enhance=True))
-    assert 0 <= js.index(".fitBounds(") < js.index("roofFxSigma")
-    assert "whenReady(function () { setTimeout(roofFxSigma, 0); })" in js and '.on("zoomend", roofFxSigma)' in js
+def test_canvas_script_runs_after_fit_bounds_inside_when_ready_and_hides_the_esri_layer():
     m = app.build_roof_map([40.97, 29.07], bounds=BOUNDS, enhance=True)
-    m.render()
+    js = _script(m)
+    assert 0 <= js.index(".fitBounds(") < js.index("function roofEnhance()")
+    assert js.index("function roofEnhance()") < js.index("whenReady(function () { setTimeout(roofEnhance, 0); });")
+    tile_name = re.search(r"var (tile_layer_\w+) = L\.tileLayer\(", js).group(1)
+    assert f"var tiles = {tile_name};" in js
     html = _get_html(m)
-    assert 'id="roof-fx"' in html and ".roof-esri { filter: url(#roof-fx); }" in html
+    assert "<filter" not in html and "filter: url" not in html  # the SVG filter is gone
 
 
-def test_enhancement_off_adds_no_filter_to_the_map():
+def test_enhancement_off_adds_no_canvas_script_to_the_map():
     m = app.build_roof_map([40.97, 29.07], bounds=BOUNDS, enhance=False)
-    m.render()
-    html = _get_html(m)
-    assert "<filter" not in html and "filter: url" not in html and "roofFxSigma" not in _get_map_string(m)
+    js = _script(m)
+    assert "roofEnhance" not in js and "imageOverlay" not in js and "getImageData" not in js
+    assert '"crossOrigin": "anonymous"' in js  # the plain tile layer is unchanged otherwise
 
 
 def test_the_first_map_gets_no_filter_and_stays_navigable():
@@ -124,7 +126,7 @@ def _fx_toggle(at):
 
 def _has_filter(fig):
     fig.render()
-    return "<filter" in _get_html(fig)
+    return "function roofEnhance()" in _get_map_string(fig)
 
 
 def test_enhancement_toggle_and_offset_changes_keep_drawings_and_the_fitted_view(mocked, roof_figs, sample_index, building_point):
@@ -226,3 +228,9 @@ def test_sifirla_restores_the_initial_fitted_view(mocked, roof_figs, sample_inde
     assert not at.exception
     assert _roof_draw(at)["offset"] == (0.0, 0.0) and _bounds(at) == initial
     assert f"{initial[0][0]}" in _script(figs[-1][0])  # the map is built with the initial view again
+
+
+def test_esri_caption_says_never_sent_or_stored_and_keeps_the_attribution():
+    assert "analiz edilmez" not in app.ROOF_VIEW_CAPTION
+    assert "Görüntü hiçbir sunucuya veya yapay zekâ modeline gönderilmez ve saklanmaz." in app.ROOF_VIEW_CAPTION
+    assert app.ROOF_VIEW_CAPTION.endswith(app.ESRI_ATTRIBUTION)
