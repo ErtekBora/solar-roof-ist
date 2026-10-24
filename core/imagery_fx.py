@@ -24,7 +24,7 @@ from core.config import ESRI_TILES_URL
 NATIVE_ZOOM = 19  # must match app.ESRI_NATIVE_ZOOM
 PANE = "roofEnhanced"
 CACHE_MAX = 4  # processed views kept in browser memory (window.parent.__roofFxCache)
-CACHE_NAME = "__roofFxCache"  # never shared with the AI super-resolution cache (core/superres)
+CACHE_NAME = "__roofFxCache"  # window.parent property holding the processed views
 CAPTION = (
     "İyileştirme yalnızca tarayıcınızda, bellekte yapılır (gürültü azaltma, yerel kontrast, keskinleştirme). Görüntü "
     "sunucuya gönderilmez, saklanmaz ve yapay zekâya verilmez. Gerçek çözünürlüğü artırmaz."

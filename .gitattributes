@@ -1,3 +1,0 @@
-# Model files must stay byte-exact (SHA-256 in static/models/SOURCES.md): no line-ending conversion, no text diff.
-static/models/*.onnx binary
-static/models/*.data binary
