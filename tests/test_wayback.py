@@ -17,7 +17,7 @@ WB_56102 = (
 
 def _js(key="b1"):
     m = folium.Map(location=[40.97, 29.07], tiles=None)
-    layer = folium.TileLayer(tiles=ESRI_TILES_URL, attr="Esri", cross_origin="anonymous").add_to(m)
+    layer = folium.TileLayer(tiles=ESRI_TILES_URL, attr="Esri").add_to(m)
     wayback.add_to_map(m, layer, key, ESRI_TILES_URL)
     m.render()
     return re.sub(r"\s+", " ", _get_map_string(m)), layer
@@ -74,13 +74,11 @@ def test_change_switches_the_url_and_the_attribution_without_a_rerun():
     assert "Streamlit.setComponentValue" not in js
 
 
-def test_imagery_url_is_published_on_the_map_and_a_change_fires_roofimagerychange_after_set_url():
+def test_a_change_only_sets_the_url_no_imagery_event_or_published_url():
     js, _ = _js()
-    assert "map.roofImageryUrl = LIVE_URL;" in js  # on init, before a stored choice is applied
-    assert js.index("map.roofImageryUrl = LIVE_URL;") < js.index("apply(chosen)")
     switch = js[js.index("if (url !== currentUrl) {"):js.index("if (attr !== currentAttr)")]
-    assert switch.index("tiles.setUrl(url);") < switch.index("currentUrl = map.roofImageryUrl = url;")
-    assert switch.index("currentUrl = map.roofImageryUrl = url;") < switch.index('map.fire("roofimagerychange", {url: url});')
+    assert switch == "if (url !== currentUrl) { tiles.setUrl(url); currentUrl = url; } "
+    assert "map.fire(" not in js and "map.roofImagery" not in js and "imagerychange" not in js
 
 
 def test_choice_lives_on_window_parent_inside_try_catch():

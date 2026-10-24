@@ -5,8 +5,7 @@ the choice only switches the tile layer's URL in the user's browser. Nothing is 
 any model. The choice is kept per building in plain JS memory on window.parent (gone when the page is closed) and is
 applied right after the tile layer is created, before the first tile load of a rebuilt map.
 
-The current imagery template is published as `map.roofImageryUrl` and every switch fires "roofimagerychange", so the
-classical enhancement (core/imagery_fx) re-runs on the chosen imagery.
+The raw tiles are shown as delivered: no image processing of any kind.
 Docs: https://leafletjs.com/reference.html#tilelayer-seturl  https://leafletjs.com/reference.html#control-attribution
 https://leafletjs.com/reference.html#domevent-disableclickpropagation
 """
@@ -42,7 +41,6 @@ class WaybackScript(MacroElement):
             var OPTIONS = {{ this.options|tojson }};  // [{label, release, url}], the live option first
             var WB_ATTR = {{ this.wb_attr|tojson }};
             var LIVE_ATTR = tiles.getAttribution(), currentUrl = LIVE_URL, currentAttr = LIVE_ATTR;
-            map.roofImageryUrl = LIVE_URL;  // the current imagery template, read by core/imagery_fx
 
             function store() {  // a Map on window.parent; null when it is unreachable
                 try {
@@ -63,8 +61,7 @@ class WaybackScript(MacroElement):
                 var url = wb ? choice.url : LIVE_URL, attr = wb ? WB_ATTR.replace("{date}", choice.label) : LIVE_ATTR;
                 if (url !== currentUrl) {
                     tiles.setUrl(url);
-                    currentUrl = map.roofImageryUrl = url;
-                    map.fire("roofimagerychange", {url: url});
+                    currentUrl = url;
                 }
                 if (attr !== currentAttr) {
                     tiles.options.attribution = attr;

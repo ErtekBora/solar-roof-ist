@@ -1,4 +1,4 @@
-"""Roof map: static building-fitted view, imagery date selector, enhancement toggle, alignment expander, drawings
+"""Roof map: static building-fitted view with raw imagery, imagery date selector, alignment expander, drawings
 across rebuilds."""
 import json
 import re
@@ -10,7 +10,7 @@ import shapely
 from streamlit_folium import _get_html, _get_map_string
 
 import app
-from core import drawings, explain, imagery_fx, wayback
+from core import drawings, explain, wayback
 from test_app import (  # noqa: F401  (fixtures and helpers shared with the app tests)
     _button, _centre_obstacle, _feature, _roof_draw, _roof_inputs, _run_with_point, _widget, building_point, map_calls,
     mocked, roof_figs, sample_index,
@@ -47,13 +47,13 @@ def _draw_one(at, box, sample_index, building_point):
 
 def test_rendered_roof_map_is_a_static_fitted_view():
     js = _script(app.build_roof_map([40.97, 29.07], bounds=BOUNDS))
-    assert '.fitBounds( [[40.969, 29.069], [40.971, 29.071]], {"maxZoom": 20.0, "padding": [10, 10]} );' in js
+    assert '.fitBounds( [[40.969, 29.069], [40.971, 29.071]], {"maxZoom": 19.5, "padding": [10, 10]} );' in js
     assert '"zoomSnap": 0.1' in js and '"zoomDelta": 0.1' in js and '"maxZoom": 22, } } );' in js
     for option in ("dragging", "scrollWheelZoom", "doubleClickZoom", "touchZoom", "boxZoom", "keyboard", "zoomControl"):
         assert f'"{option}": false' in js, option
     tile = re.search(r"L\.tileLayer\(.*?\);", js).group()
     assert '"className": "roof-esri"' in tile and '"maxNativeZoom": 19' in tile and '"maxZoom": 22' in tile
-    assert '"crossOrigin": "anonymous"' in tile
+    assert "crossOrigin" not in tile  # only the removed canvas enhancement needed it
     assert "Tiles \\u00a9 Esri" in tile  # the Esri attribution is unchanged
 
 
@@ -61,10 +61,10 @@ def _fit_zoom(js):
     return json.loads(re.search(r"\.fitBounds\( \[\[.*?\]\], (\{.*?\}) \);", js).group(1))["maxZoom"]
 
 
-@pytest.mark.parametrize("enhance", [True, False])
-def test_fitted_zoom_is_20_while_map_and_tiles_allow_22(enhance):
-    js = _script(app.build_roof_map([40.97, 29.07], bounds=BOUNDS, enhance=enhance))
-    assert _fit_zoom(js) == 20 and app.ROOF_MAX_FIT_ZOOM == 20.0
+@pytest.mark.parametrize("key", [None, "b1"])
+def test_fitted_zoom_is_19_5_while_map_and_tiles_allow_22(key):
+    js = _script(app.build_roof_map([40.97, 29.07], bounds=BOUNDS, wayback_key=key))
+    assert _fit_zoom(js) == 19.5 and app.ROOF_MAX_FIT_ZOOM == 19.5
     assert app.ESRI_NATIVE_ZOOM == 19 and not hasattr(app, "ROOF_MAX_FIT_ZOOM_AI")
     assert '"maxZoom": 22, } } );' in js  # map option
     assert '"maxZoom": 22' in re.search(r"L\.tileLayer\(.*?\);", js).group()  # tile layer
@@ -76,27 +76,22 @@ def test_the_draw_toolbar_still_exists_on_the_static_map():
     assert "L.Control.Draw" in js and '"remove": true' in js
 
 
-CLASSICAL = "function roofEnhance()"
-AI_MARKERS = ("upscaleCrop", "onnxruntime", "InferenceSession", "__roofSr", "roofSuperRes", "real_esrgan", "Netleştir")
+# any trace of image processing (classical canvas enhancement or AI super-resolution) in the rendered map
+PROCESSING_MARKERS = (
+    "roofEnhance", "__roofFxCache", "imageOverlay", "getContext", "getImageData", "roofImageryUrl",
+    "roofimagerychange", "crossOrigin", "upscaleCrop", "onnxruntime", "InferenceSession", "__roofSr",
+    "roofSuperRes", "real_esrgan", "Netleştir", "Görüntü iyileştirme",
+)
 
 
 @pytest.mark.parametrize("key", [None, "b1"])
-def test_classical_script_only_with_enhance_and_no_ai_script_anywhere(key):
-    on = _script(app.build_roof_map([40.97, 29.07], bounds=BOUNDS, wayback_key=key, enhance=True))
-    off = _script(app.build_roof_map([40.97, 29.07], bounds=BOUNDS, wayback_key=key))
-    assert CLASSICAL in on and "__roofFxCache" in on
-    assert CLASSICAL not in off and "imageOverlay" not in off
-    for js in (on, off):
-        assert not [m for m in AI_MARKERS if m in js]
-    assert "superres_bbox" not in app.build_roof_map.__code__.co_varnames
-
-
-def test_classical_script_runs_after_fit_bounds_and_hides_the_esri_layer():
-    js = _script(app.build_roof_map([40.97, 29.07], bounds=BOUNDS, wayback_key="b1", enhance=True))
-    assert 0 <= js.index(".fitBounds(") < js.index(CLASSICAL) < js.index("map.whenReady(schedule);")
-    assert js.index("map.roofImageryUrl = LIVE_URL;") < js.index(CLASSICAL)  # the date selector sets the URL first
-    tile_name = re.search(r"var (tile_layer_\w+) = L\.tileLayer\(", js).group(1)
-    assert f"var tiles = {tile_name};" in js
+def test_rendered_roof_map_has_no_image_processing_script(key):
+    js = _script(app.build_roof_map([40.97, 29.07], bounds=BOUNDS, wayback_key=key))
+    assert not [m for m in PROCESSING_MARKERS if m in js]
+    assert set(app.build_roof_map.__code__.co_varnames[:5]) == {"center", "draw_tools", "aligning", "bounds", "wayback_key"}
+    assert app.build_roof_map.__code__.co_argcount == 5  # no `enhance` / `superres_bbox` parameter
+    for name in ("KEY_FX_ON", "KEY_FX_ON_KEEP", "FX_TOGGLE_LABEL", "enhancement_control", "_fx_changed", "imagery_fx"):
+        assert not hasattr(app, name), name
 
 
 def test_wayback_script_is_added_right_after_the_tile_layer_and_before_fit_bounds():
@@ -152,39 +147,27 @@ def _toggle(at, label):
     return next(t for t in at.toggle if t.label == label)
 
 
-def test_only_the_enhancement_toggle_default_on_with_its_caption_and_no_ai_toggle(mocked, roof_figs, building_point):
+def test_no_enhancement_toggle_raw_imagery_with_the_date_selector_and_captions(mocked, roof_figs, building_point):
     calls, box, figs = roof_figs
     at = _run_with_point(building_point)
-    assert [t.label for t in at.toggle if t.label in ("Görüntü iyileştirme", "Netleştir (YZ)")] == ["Görüntü iyileştirme"]
-    fx = _toggle(at, "Görüntü iyileştirme")
-    assert fx.value is True and not fx.disabled
+    assert not at.exception
+    assert not [t.label for t in at.toggle if t.label in ("Görüntü iyileştirme", "Netleştir (YZ)")]
+    assert "roof_fx_on" not in at.session_state and "_roof_fx_on_keep" not in at.session_state
     captions = [c.value for c in at.caption]
-    assert imagery_fx.CAPTION in captions and wayback.CAPTION in captions
-    assert not any("Netleştir" in c or "4 kat" in c for c in captions)
+    assert wayback.CAPTION in captions and app.ROOF_VIEW_CAPTION in captions
+    assert not any("Netleştir" in c or "4 kat" in c or "iyileştir" in c for c in captions)
     js = _script_of(figs[-1][0])
-    assert CLASSICAL in js and "tile/56102/" in js and _fit_zoom(re.sub(r"\s+", " ", js)) == 20
-    assert not [m for m in AI_MARKERS if m in js]
+    assert "tile/56102/" in js and _fit_zoom(re.sub(r"\s+", " ", js)) == 19.5
+    assert not [m for m in PROCESSING_MARKERS if m in js]
 
 
-def test_enhancement_toggle_off_and_on_again_keeps_its_choice(mocked, roof_figs, building_point):
-    calls, box, figs = roof_figs
-    at = _run_with_point(building_point)
-    _toggle(at, "Görüntü iyileştirme").set_value(False).run()
-    assert not at.exception and at.session_state[app.KEY_FX_ON] is False
-    assert CLASSICAL not in _script_of(figs[-1][0])
-    _toggle(at, "Görüntü iyileştirme").set_value(True).run()
-    assert at.session_state[app.KEY_FX_ON] is True and CLASSICAL in _script_of(figs[-1][0])
-
-
-def test_enhancement_toggle_and_offset_changes_keep_drawings_and_the_fitted_view(mocked, roof_figs, sample_index, building_point):
+def test_offset_changes_keep_drawings_and_the_fitted_view(mocked, roof_figs, sample_index, building_point):
     calls, box, figs = roof_figs
     at = _run_with_point(building_point)
     _draw_one(at, box, sample_index, building_point)
     stored, bounds = _obstacles(at), _bounds(at)
     for change in (
-        lambda: _toggle(at, "Görüntü iyileştirme").set_value(False).run(),
         lambda: _button(at, "5 m →").click().run(),
-        lambda: _toggle(at, "Görüntü iyileştirme").set_value(True).run(),
         lambda: _button(at, "Sıfırla").click().run(),
     ):
         gen = _roof_draw(at)["gen"]
@@ -273,11 +256,17 @@ def test_sifirla_restores_the_initial_fitted_view(mocked, roof_figs, sample_inde
     assert f"{initial[0][0]}" in _script(figs[-1][0])  # the map is built with the initial view again
 
 
-def test_esri_caption_says_never_sent_or_stored_and_keeps_the_attribution():
-    assert "analiz edilmez" not in app.ROOF_VIEW_CAPTION
-    assert "Görüntü hiçbir sunucuya veya yapay zekâ modeline gönderilmez ve saklanmaz." in app.ROOF_VIEW_CAPTION
-    assert "Netleştir" not in app.ROOF_VIEW_CAPTION and "büyütülür" not in app.ROOF_VIEW_CAPTION
+def test_esri_caption_sentence_is_exact_and_keeps_the_tall_building_note_and_attribution():
+    sentence = (
+        "Uydu görüntüsü (Esri World Imagery) yalnızca gösterim içindir; hiçbir sunucuya veya yapay zekâ modeline "
+        "gönderilmez, işlenmez veya saklanmaz."
+    )
+    assert app.ROOF_IMAGERY_SENTENCE == sentence
+    assert app.ROOF_VIEW_CAPTION.startswith(sentence + " ")
+    assert "yüksek binalarda çatı birkaç metre kaymış görünebilir." in app.ROOF_VIEW_CAPTION
     assert app.ROOF_VIEW_CAPTION.endswith(app.ESRI_ATTRIBUTION)
+    assert "analiz edilmez" not in app.ROOF_VIEW_CAPTION and "iyileştir" not in app.ROOF_VIEW_CAPTION
+    assert "Netleştir" not in app.ROOF_VIEW_CAPTION and "büyütülür" not in app.ROOF_VIEW_CAPTION
 
 
 def test_no_static_serving_and_no_model_files():
@@ -285,3 +274,4 @@ def test_no_static_serving_and_no_model_files():
     config = tomllib.loads((root / ".streamlit" / "config.toml").read_text(encoding="utf-8"))
     assert config == {"server": {"headless": True}}
     assert not (root / "static").exists() and not (root / "core" / "superres.py").exists()
+    assert not (root / "core" / "imagery_fx.py").exists() and not (root / "tests" / "test_imagery_fx.py").exists()
