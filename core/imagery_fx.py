@@ -22,6 +22,7 @@ from core.config import ESRI_TILES_URL
 
 NATIVE_ZOOM = 19  # must match app.ESRI_NATIVE_ZOOM
 PANE = "roofEnhanced"
+CACHE_MAX = 4  # processed views kept in browser memory (window.parent.__roofFxCache)
 CAPTION = (
     "İyileştirme yalnızca tarayıcınızda, bellekte yapılır (gürültü azaltma, yerel kontrast, keskinleştirme). Görüntü "
     "sunucuya gönderilmez, saklanmaz ve yapay zekâya verilmez. Gerçek çözünürlüğü artırmaz."
@@ -195,8 +196,13 @@ function sharpenScaled(rgba, W, H) {  // OUTPUT_SCALE x: soft-threshold unsharp 
 
 
 class CanvasEnhanceScript(MacroElement):
-    """After fitBounds has been applied (whenReady + setTimeout 0): build the enhanced overlay once for the static
-    view. Falls back to the plain tiles (one console.warn) on any failure."""
+    """After fitBounds has been applied (whenReady + setTimeout 0): show the enhanced overlay once for the static
+    view, from the in-memory cache when the same tile range and constants were processed before. Falls back to the
+    plain tiles (one console.warn) on any failure.
+
+    Cache: a Map on window.parent (`__roofFxCache`, at most CACHE_MAX entries, oldest dropped), plain JS memory only,
+    gone when the page is closed. Every map rebuild is a new iframe and a blob URL dies with the document that made
+    it, so the cache keeps a parent-realm copy of the PNG Blob and each rebuild makes its own URL from it."""
 
     _template = Template(
         """
@@ -204,19 +210,65 @@ class CanvasEnhanceScript(MacroElement):
         (function () {
             {{ this.pipeline }}
             var NZ = {{ this.native }};
-            var TILE = 256, MAX_TILES = 400;
+            var TILE = 256, MAX_TILES = 400, CACHE_MAX = {{ this.cache_max }};
             var TILE_URL = {{ this.tile_url|tojson }};
             var map = {{ this._parent.get_name() }};
             var tiles = {{ this.tile_layer_name }};
             var overlay = null, overlayUrl = null, failed = false;
+            var PARAMS_HASH = hashString([GUIDED_RADIUS, GUIDED_EPS, CLAHE_GRID_X, CLAHE_GRID_Y, CLAHE_CLIP, CLAHE_BLEND,
+                USM_SIGMA, USM_AMOUNT, USM_THRESHOLD, OUTPUT_SCALE, CHROMA_BOOST].join(","));
 
+            function hashString(s) {  // djb2-xor, enough to tell constant sets apart
+                var h = 5381;
+                for (var i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+                return h.toString(16);
+            }
+            function revoke(url) { if (url) { try { URL.revokeObjectURL(url); } catch (err) {} } }
+            function getCache() {  // null when window.parent is unreachable: then no cache
+                try {
+                    var w = window.parent;
+                    if (!w.__roofFxCache) w.__roofFxCache = new w.Map();
+                    return w.__roofFxCache;
+                } catch (err) { return null; }
+            }
+            function cacheGet(key) {  // a hit becomes the newest entry
+                try {
+                    var c = getCache();
+                    if (!c || !c.has(key)) return null;
+                    var entry = c.get(key);
+                    c.delete(key); c.set(key, entry);
+                    return entry;
+                } catch (err) { return null; }
+            }
+            function cachePut(key, blob) {
+                try {
+                    var c = getCache(), w = window.parent;
+                    if (!c) return;
+                    c.delete(key);
+                    c.set(key, {blob: new w.Blob([blob], {type: blob.type}), url: null});  // outlives this iframe
+                    while (c.size > CACHE_MAX) {
+                        var oldest = c.keys().next().value;
+                        revoke(c.get(oldest).url);
+                        c.delete(oldest);
+                    }
+                } catch (err) {}
+            }
+            function cacheDrop(key) {
+                try {
+                    var c = getCache();
+                    if (c && c.has(key)) { revoke(c.get(key).url); c.delete(key); }
+                } catch (err) {}
+            }
             function setTileOpacity(v) {
                 if (tiles) { tiles.setOpacity(v); return; }
                 map.eachLayer(function (l) { if (l instanceof L.TileLayer) l.setOpacity(v); });
             }
-            function fail(err) {  // back to the original tiles
+            function removeOverlay() {
                 if (overlay) { map.removeLayer(overlay); overlay = null; }
-                if (overlayUrl) { URL.revokeObjectURL(overlayUrl); overlayUrl = null; }
+                revoke(overlayUrl); overlayUrl = null;
+            }
+            function fail(err) {  // back to the original tiles
+                removeOverlay();
                 setTileOpacity(1);
                 if (!failed) { failed = true; console.warn("roofEnhanced: enhancement off, original tiles shown:", err); }
             }
@@ -229,54 +281,77 @@ class CanvasEnhanceScript(MacroElement):
                     img.src = L.Util.template(TILE_URL, {z: NZ, x: x, y: y});
                 });
             }
-            function show(blob, nw, se) {
+            function show(blob, nw, se, entry, onError) {  // `entry`: the cache entry that owns the URL, or null
                 if (!blob) throw new Error("toBlob returned null");
-                if (overlay) map.removeLayer(overlay);
-                if (overlayUrl) URL.revokeObjectURL(overlayUrl);
-                overlayUrl = URL.createObjectURL(blob);
+                removeOverlay();
+                var url = URL.createObjectURL(blob);
+                if (entry) { revoke(entry.url); entry.url = url; } else { overlayUrl = url; }
                 var pane = map.getPane("{{ this.pane }}") || map.createPane("{{ this.pane }}");
                 pane.style.zIndex = 250;
                 pane.style.pointerEvents = "none";
-                overlay = L.imageOverlay(overlayUrl, L.latLngBounds(nw, se), {pane: "{{ this.pane }}", interactive: false});
+                overlay = L.imageOverlay(url, L.latLngBounds(nw, se), {pane: "{{ this.pane }}", interactive: false});
                 overlay.on("load", function () { if (!failed) setTileOpacity(0); });
-                overlay.on("error", fail);
+                overlay.on("error", onError);
                 overlay.addTo(map);
+            }
+            function build(key, xMin, yMin, xMax, yMax, nw, se) {
+                var nx = xMax - xMin + 1, ny = yMax - yMin + 1;
+                if (nx * ny > MAX_TILES) throw new Error("too many tiles: " + nx * ny);
+                var jobs = [];
+                for (var ty = yMin; ty <= yMax; ty++) for (var tx = xMin; tx <= xMax; tx++) jobs.push(loadTile(tx, ty));
+                Promise.all(jobs).then(function (loaded) {
+                    var t0 = performance.now(), W = nx * TILE, H = ny * TILE;
+                    var mosaic = document.createElement("canvas");
+                    mosaic.width = W; mosaic.height = H;
+                    var mctx = mosaic.getContext("2d");
+                    loaded.forEach(function (t) { mctx.drawImage(t.img, (t.x - xMin) * TILE, (t.y - yMin) * TILE); });
+                    var native = mctx.getImageData(0, 0, W, H);  // throws on a tainted canvas
+                    processNative(native.data, W, H);
+                    mctx.putImageData(native, 0, 0);
+                    var out = document.createElement("canvas");
+                    out.width = W * OUTPUT_SCALE; out.height = H * OUTPUT_SCALE;
+                    var octx = out.getContext("2d");
+                    octx.imageSmoothingEnabled = true;
+                    octx.imageSmoothingQuality = "high";
+                    octx.drawImage(mosaic, 0, 0, out.width, out.height);
+                    var scaled = octx.getImageData(0, 0, out.width, out.height);
+                    sharpenScaled(scaled.data, out.width, out.height);
+                    octx.putImageData(scaled, 0, 0);
+                    console.info("roofEnhanced: " + W + "x" + H + " -> " + out.width + "x" + out.height + " in "
+                        + Math.round(performance.now() - t0) + " ms");
+                    out.toBlob(function (blob) {
+                        try {
+                            if (!blob) throw new Error("toBlob returned null");
+                            cachePut(key, blob);
+                            var entry = cacheGet(key);
+                            show(entry ? entry.blob : blob, nw, se, entry, fail);
+                        } catch (err) { fail(err); }
+                    }, "image/png");
+                }).catch(fail);
             }
             function roofEnhance() {
                 try {
                     var b = map.getBounds(), p0 = map.project(b.getNorthWest(), NZ), p1 = map.project(b.getSouthEast(), NZ);
                     var xMin = Math.floor(p0.x / TILE) - 1, yMin = Math.floor(p0.y / TILE) - 1;
                     var xMax = Math.floor(p1.x / TILE) + 1, yMax = Math.floor(p1.y / TILE) + 1;
-                    var nx = xMax - xMin + 1, ny = yMax - yMin + 1;
-                    if (nx * ny > MAX_TILES) throw new Error("too many tiles: " + nx * ny);
-                    var jobs = [];
-                    for (var ty = yMin; ty <= yMax; ty++) for (var tx = xMin; tx <= xMax; tx++) jobs.push(loadTile(tx, ty));
-                    Promise.all(jobs).then(function (loaded) {
-                        var t0 = performance.now(), W = nx * TILE, H = ny * TILE;
-                        var mosaic = document.createElement("canvas");
-                        mosaic.width = W; mosaic.height = H;
-                        var mctx = mosaic.getContext("2d");
-                        loaded.forEach(function (t) { mctx.drawImage(t.img, (t.x - xMin) * TILE, (t.y - yMin) * TILE); });
-                        var native = mctx.getImageData(0, 0, W, H);  // throws on a tainted canvas
-                        processNative(native.data, W, H);
-                        mctx.putImageData(native, 0, 0);
-                        var out = document.createElement("canvas");
-                        out.width = W * OUTPUT_SCALE; out.height = H * OUTPUT_SCALE;
-                        var octx = out.getContext("2d");
-                        octx.imageSmoothingEnabled = true;
-                        octx.imageSmoothingQuality = "high";
-                        octx.drawImage(mosaic, 0, 0, out.width, out.height);
-                        var scaled = octx.getImageData(0, 0, out.width, out.height);
-                        sharpenScaled(scaled.data, out.width, out.height);
-                        octx.putImageData(scaled, 0, 0);
-                        console.info("roofEnhanced: " + W + "x" + H + " -> " + out.width + "x" + out.height + " in "
-                            + Math.round(performance.now() - t0) + " ms");
-                        var nw = map.unproject(L.point(xMin * TILE, yMin * TILE), NZ);
-                        var se = map.unproject(L.point((xMax + 1) * TILE, (yMax + 1) * TILE), NZ);
-                        out.toBlob(function (blob) {
-                            try { show(blob, nw, se); } catch (err) { fail(err); }
-                        }, "image/png");
-                    }).catch(fail);
+                    var nw = map.unproject(L.point(xMin * TILE, yMin * TILE), NZ);
+                    var se = map.unproject(L.point((xMax + 1) * TILE, (yMax + 1) * TILE), NZ);
+                    var key = [NZ, xMin, xMax, yMin, yMax, PARAMS_HASH].join("|");
+                    var hit = cacheGet(key);
+                    if (hit) {
+                        try {
+                            show(hit.blob, nw, se, hit, function () {  // a stale entry: drop it and process again
+                                cacheDrop(key);
+                                removeOverlay();
+                                try { build(key, xMin, yMin, xMax, yMax, nw, se); } catch (err) { fail(err); }
+                            });
+                            console.info("roofEnhanced: cached result reused (" + key + ")");
+                            return;
+                        } catch (err) {
+                            cacheDrop(key);
+                        }
+                    }
+                    build(key, xMin, yMin, xMax, yMax, nw, se);
                 } catch (err) {
                     fail(err);
                 }
@@ -291,6 +366,7 @@ class CanvasEnhanceScript(MacroElement):
         super().__init__()
         self._name = "CanvasEnhanceScript"
         self.pipeline, self.native, self.tile_url, self.pane = PIPELINE_JS, NATIVE_ZOOM, ESRI_TILES_URL, PANE
+        self.cache_max = CACHE_MAX
         self.tile_layer_name = tile_layer.get_name() if tile_layer is not None else "null"
 
 

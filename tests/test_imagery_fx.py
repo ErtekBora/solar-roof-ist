@@ -52,17 +52,19 @@ def test_overlay_is_in_a_non_interactive_pane_between_tiles_and_drawings():
     js, _ = _js()
     assert 'map.createPane("roofEnhanced")' in js and "pane.style.zIndex = 250;" in js
     assert 'pane.style.pointerEvents = "none";' in js
-    assert 'L.imageOverlay(overlayUrl, L.latLngBounds(nw, se), {pane: "roofEnhanced", interactive: false})' in js
-    assert "URL.createObjectURL(blob)" in js and "URL.revokeObjectURL(overlayUrl)" in js and ".toBlob(" in js
+    assert 'L.imageOverlay(url, L.latLngBounds(nw, se), {pane: "roofEnhanced", interactive: false})' in js
+    assert "URL.createObjectURL(blob)" in js and "URL.revokeObjectURL(url)" in js and ".toBlob(" in js
+    assert "revoke(overlayUrl)" in js and "revoke(entry.url); entry.url = url;" in js  # previous URL revoked
 
 
 def test_failure_path_removes_the_overlay_restores_the_tiles_and_warns_once():
     js, _ = _js()
     fail = re.search(r"function fail\(err\) \{.*?\} function loadTile", js).group()
-    assert "map.removeLayer(overlay)" in fail and "setTileOpacity(1)" in fail
-    assert fail.count("console.warn(") == 1 and "if (!failed)" in fail
-    assert ".catch(fail)" in js and "catch (err) { fail(err); }" in js and 'overlay.on("error", fail)' in js
-    assert js.count("console.info(") == 1  # processing time, once
+    assert "removeOverlay();" in fail and "setTileOpacity(1)" in fail
+    assert "function removeOverlay() { if (overlay) { map.removeLayer(overlay); overlay = null; }" in js
+    assert fail.count("console.warn(") == 1 and "if (!failed)" in fail and js.count("console.warn(") == 1
+    assert ".catch(fail)" in js and "catch (err) { fail(err); }" in js and 'overlay.on("error", onError)' in js
+    assert js.count("console.info(") == 2  # processing time, or one cache-hit line
 
 
 def test_passed_tile_layer_is_hidden_and_restored_else_every_tile_layer():
@@ -103,7 +105,9 @@ def test_pipeline_order_and_soft_threshold_unsharp_mask():
     assert script.index('imageSmoothingQuality = "high"') < script.index("sharpenScaled(scaled.data")
 
 
-@pytest.mark.parametrize("forbidden", ["fetch(", "XMLHttpRequest", "localStorage", "indexedDB", "sendBeacon", "WebSocket"])
+@pytest.mark.parametrize(
+    "forbidden", ["fetch(", "XMLHttpRequest", "localStorage", "sessionStorage", "indexedDB", "sendBeacon", "WebSocket"],
+)
 def test_no_network_upload_or_storage_api(forbidden):
     js, _ = _js()
     assert forbidden not in js
@@ -114,3 +118,34 @@ def test_caption_says_browser_memory_only():
         "İyileştirme yalnızca tarayıcınızda, bellekte yapılır (gürültü azaltma, yerel kontrast, keskinleştirme). "
         "Görüntü sunucuya gönderilmez, saklanmaz ve yapay zekâya verilmez. Gerçek çözünürlüğü artırmaz."
     )
+
+
+def test_results_are_cached_in_parent_window_memory_only():
+    js, _ = _js()
+    assert "window.parent" in js and "__roofFxCache" in js and "new w.Map()" in js
+    assert "sessionStorage" not in js and "localStorage" not in js and "caches." not in js
+    get_cache = re.search(r"function getCache\(\) \{.*?\} function cacheGet", js).group()
+    assert "try {" in get_cache and "catch (err) { return null; }" in get_cache  # unreachable parent: no cache
+
+
+def test_cache_key_is_the_tile_range_plus_a_hash_of_all_constants():
+    js, _ = _js()
+    assert 'var key = [NZ, xMin, xMax, yMin, yMax, PARAMS_HASH].join("|");' in js
+    hashed = re.search(r"var PARAMS_HASH = hashString\(\[(.*?)\]\.join", js).group(1)
+    assert [n.strip() for n in hashed.split(",")] == list(CONSTANTS)
+
+
+def test_cache_keeps_at_most_four_entries_and_revokes_the_dropped_url():
+    js, _ = _js()
+    assert fx.CACHE_MAX == 4 and "CACHE_MAX = 4;" in js
+    put = re.search(r"function cachePut\(key, blob\) \{.*?\} function cacheDrop", js).group()
+    assert "while (c.size > CACHE_MAX)" in put and "c.keys().next().value" in put
+    assert "revoke(c.get(oldest).url)" in put and "c.delete(oldest)" in put
+    assert "new w.Blob([blob], {type: blob.type})" in put  # a parent-realm copy outlives the map iframe
+
+
+def test_a_cache_hit_reuses_the_blob_and_a_stale_entry_is_processed_again():
+    js, _ = _js()
+    hit = js[js.index("var hit = cacheGet(key);"):js.index("map.whenReady(")]
+    assert hit.index("show(hit.blob, nw, se, hit,") < hit.index("return;") < hit.rindex("build(key,")
+    assert "cacheDrop(key); removeOverlay(); try { build(key, xMin, yMin, xMax, yMax, nw, se); }" in hit
