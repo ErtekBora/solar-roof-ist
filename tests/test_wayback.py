@@ -68,6 +68,15 @@ def test_change_switches_the_url_and_the_attribution_without_a_rerun():
     assert "Streamlit.setComponentValue" not in js
 
 
+def test_imagery_url_is_published_on_the_map_and_a_change_fires_roofimagerychange_after_set_url():
+    js, _ = _js()
+    assert "map.roofImageryUrl = LIVE_URL;" in js  # on init, before a stored choice is applied
+    assert js.index("map.roofImageryUrl = LIVE_URL;") < js.index("apply(stored)")
+    switch = js[js.index("if (url !== currentUrl) {"):js.index("if (attr !== currentAttr)")]
+    assert switch.index("tiles.setUrl(url);") < switch.index("currentUrl = map.roofImageryUrl = url;")
+    assert switch.index("currentUrl = map.roofImageryUrl = url;") < switch.index('map.fire("roofimagerychange", {url: url});')
+
+
 def test_choice_and_list_live_on_window_parent_inside_try_catch():
     js, _ = _js()
     store = re.search(r"function store\(name\) \{.*?\} catch \(err\) \{ return null; \} \}", js).group()

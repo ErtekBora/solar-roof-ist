@@ -102,7 +102,7 @@ tests/                    pytest, one test file per module
   - `.streamlit/secrets.toml` must be in .gitignore.
 - **Privacy (KVKK):** Store no personal data.
 - **Attribution:** always show "© OpenStreetMap katkıcıları · Bina verisi: Overture Maps Foundation (ODbL), Microsoft ML Buildings · Güneş verisi: PVGIS (JRC)".
-- **No Google Maps / Google Earth imagery** anywhere in the AI pipeline (Terms of Service). Satellite tiles (Esri World Imagery) are DISPLAY ONLY: no image, tile or screenshot is ever sent to Gemini or any model, stored, or analysed; keep the Esri attribution visible.
+- **No Google Maps / Google Earth imagery** anywhere in the AI pipeline (Terms of Service). Esri imagery is never sent to any server, to Gemini or to any remote model, and never stored. The only processing is an optional in-browser super-resolution model (Real-ESRGAN, static/models) whose output stays in the browser. Keep the Esri attribution visible.
 - **Numbers never come from an LLM.** Tariff, CO2 factor, installation cost bands and all results come from config or tools. Savings use the EPDK two-tier tariff in `core/calc.py`, valued PER FLAT after the production is split equally among the flats (bill-based when the user gives an average monthly flat bill, a wide fallback range otherwise).
 - **Language:** UI text in Turkish. Code, comments, docstrings and commit messages in English.
 - **Licensing:** Ultralytics (YOLOE) is AGPL-3.0, so the GitHub repo stays public. Keep a LICENSE file and credit all data sources in README.

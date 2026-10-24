@@ -1,4 +1,6 @@
-"""Roof map: static building-fitted view, imagery date selector, alignment expander, drawings across rebuilds."""
+"""Roof map: static building-fitted view, imagery date selector, classical / AI imagery toggles, alignment expander,
+drawings across rebuilds."""
+import json
 import re
 
 import pytest
@@ -6,7 +8,7 @@ import shapely
 from streamlit_folium import _get_html, _get_map_string
 
 import app
-from core import drawings, explain, wayback
+from core import drawings, explain, imagery_fx, superres, wayback
 from test_app import (  # noqa: F401  (fixtures and helpers shared with the app tests)
     _button, _centre_obstacle, _feature, _roof_draw, _roof_inputs, _run_with_point, _widget, building_point, map_calls,
     mocked, roof_figs, sample_index,
@@ -43,7 +45,7 @@ def _draw_one(at, box, sample_index, building_point):
 
 def test_rendered_roof_map_is_a_static_fitted_view():
     js = _script(app.build_roof_map([40.97, 29.07], bounds=BOUNDS))
-    assert '.fitBounds( [[40.969, 29.069], [40.971, 29.071]], {"maxZoom": 19.5, "padding": [10, 10]} );' in js
+    assert '.fitBounds( [[40.969, 29.069], [40.971, 29.071]], {"maxZoom": 20.0, "padding": [10, 10]} );' in js
     assert '"zoomSnap": 0.1' in js and '"zoomDelta": 0.1' in js and '"maxZoom": 22, } } );' in js
     for option in ("dragging", "scrollWheelZoom", "doubleClickZoom", "touchZoom", "boxZoom", "keyboard", "zoomControl"):
         assert f'"{option}": false' in js, option
@@ -53,15 +55,21 @@ def test_rendered_roof_map_is_a_static_fitted_view():
     assert "Tiles \\u00a9 Esri" in tile  # the Esri attribution is unchanged
 
 
-def test_fitted_zoom_is_capped_at_19_5_while_map_and_tiles_allow_22():
-    import json
+def _fit_zoom(js):
+    return json.loads(re.search(r"\.fitBounds\( \[\[.*?\]\], (\{.*?\}) \);", js).group(1))["maxZoom"]
 
-    js = _script(app.build_roof_map([40.97, 29.07], bounds=BOUNDS))
-    options = json.loads(re.search(r"\.fitBounds\( \[\[.*?\]\], (\{.*?\}) \);", js).group(1))
-    assert options["maxZoom"] == 19.5 and app.ROOF_MAX_FIT_ZOOM == 19.5
+
+@pytest.mark.parametrize("enhance", [True, False])
+def test_fitted_zoom_is_20_without_ai_and_21_with_ai_while_map_and_tiles_allow_22(enhance):
+    plain = _script(app.build_roof_map([40.97, 29.07], bounds=BOUNDS, enhance=enhance))
+    ai = _script(app.build_roof_map([40.97, 29.07], bounds=BOUNDS, enhance=enhance, superres_bbox=BOUNDS))
+    assert _fit_zoom(plain) == 20 and app.ROOF_MAX_FIT_ZOOM == 20.0
+    assert _fit_zoom(ai) == 21 and app.ROOF_MAX_FIT_ZOOM_AI == 21.0
     assert app.ESRI_NATIVE_ZOOM == 19
-    assert '"maxZoom": 22, } } );' in js  # map option
-    assert '"maxZoom": 22' in re.search(r"L\.tileLayer\(.*?\);", js).group()  # tile layer
+    for js in (plain, ai):
+        assert '"maxZoom": 22, } } );' in js  # map option
+        assert '"maxZoom": 22' in re.search(r"L\.tileLayer\(.*?\);", js).group()  # tile layer
+        assert '"maxNativeZoom": 19' in re.search(r"L\.tileLayer\(.*?\);", js).group()
 
 
 def test_the_draw_toolbar_still_exists_on_the_static_map():
@@ -69,13 +77,27 @@ def test_the_draw_toolbar_still_exists_on_the_static_map():
     assert "L.Control.Draw" in js and '"remove": true' in js
 
 
-def test_the_roof_map_gets_no_canvas_enhancement_script():
-    for key in (None, "b1"):
-        m = app.build_roof_map([40.97, 29.07], bounds=BOUNDS, wayback_key=key)
-        js = _script(m)
-        assert "roofEnhance" not in js and "imageOverlay" not in js and "getImageData" not in js
-        assert "__roofFxCache" not in js and "<filter" not in _get_html(m)
-    assert not hasattr(app, "enhancement_control") and not hasattr(app, "KEY_FX_ON")
+CLASSICAL, AI = "function roofEnhance()", "function upscaleCrop("
+
+
+@pytest.mark.parametrize("key", [None, "b1"])
+def test_exactly_one_of_classical_and_ai_is_injected(key):
+    def build(**kw):
+        return _script(app.build_roof_map([40.97, 29.07], bounds=BOUNDS, wayback_key=key, **kw))
+
+    classical, ai, ai_wins, neither = build(enhance=True), build(superres_bbox=BOUNDS), build(enhance=True, superres_bbox=BOUNDS), build()
+    assert CLASSICAL in classical and AI not in classical and "__roofFxCache" in classical
+    assert AI in ai and CLASSICAL not in ai and "__roofFxCache" not in ai
+    assert AI in ai_wins and CLASSICAL not in ai_wins  # never together: the AI replaces the classical look
+    assert CLASSICAL not in neither and AI not in neither and "imageOverlay" not in neither
+
+
+def test_classical_script_runs_after_fit_bounds_and_hides_the_esri_layer():
+    js = _script(app.build_roof_map([40.97, 29.07], bounds=BOUNDS, wayback_key="b1", enhance=True))
+    assert 0 <= js.index(".fitBounds(") < js.index(CLASSICAL) < js.index("map.whenReady(schedule);")
+    assert js.index("map.roofImageryUrl = LIVE_URL;") < js.index(CLASSICAL)  # the date selector sets the URL first
+    tile_name = re.search(r"var (tile_layer_\w+) = L\.tileLayer\(", js).group(1)
+    assert f"var tiles = {tile_name};" in js
 
 
 def test_wayback_script_is_added_right_after_the_tile_layer_and_before_fit_bounds():
@@ -91,7 +113,7 @@ def test_the_first_map_gets_no_filter_and_stays_navigable():
     m = app.build_map()
     html = m.get_root().render()
     assert "roof-esri" not in html and "<filter" not in html and "fitBounds" not in html
-    assert "waybackconfig" not in html and "roofEnhance" not in html
+    assert "waybackconfig" not in html and "roofEnhance" not in html and "upscaleCrop" not in html
 
 
 # --------------------------------------------------------------- fitted bounds
@@ -127,17 +149,65 @@ def _script_of(fig):
     return _get_map_string(fig)
 
 
-def test_no_enhancement_toggle_the_date_caption_and_offset_changes_keep_drawings_and_the_view(mocked, roof_figs, sample_index, building_point):
+def _toggle(at, label):
+    return next(t for t in at.toggle if t.label == label)
+
+
+def test_toggles_default_classical_on_ai_off_with_their_captions(mocked, roof_figs, building_point):
     calls, box, figs = roof_figs
     at = _run_with_point(building_point)
-    assert not [t for t in at.toggle if t.label == "Görüntü iyileştirme"]
+    fx, ai = _toggle(at, "Görüntü iyileştirme"), _toggle(at, "Netleştir (YZ)")
+    assert fx.value is True and not fx.disabled and ai.value is False and not ai.disabled
     captions = [c.value for c in at.caption]
-    assert wayback.CAPTION in captions and not any("İyileştirme yalnızca" in c for c in captions)
+    assert imagery_fx.CAPTION in captions and superres.CAPTION in captions and wayback.CAPTION in captions
     js = _script_of(figs[-1][0])
-    assert "waybackconfig.json" in js and "function roofEnhance()" not in js
+    assert CLASSICAL in js and AI not in js and "waybackconfig.json" in js and _fit_zoom(re.sub(r"\s+", " ", js)) == 20
+
+
+def test_ai_on_disables_the_classical_toggle_keeps_its_value_and_injects_only_the_ai(mocked, roof_figs, building_point):
+    calls, box, figs = roof_figs
+    at = _run_with_point(building_point)
+    _toggle(at, "Görüntü iyileştirme").set_value(False).run()
+    _toggle(at, "Netleştir (YZ)").set_value(True).run()
+    assert not at.exception
+    fx = _toggle(at, "Görüntü iyileştirme")
+    assert fx.disabled and fx.value is False and fx.help == app.FX_DISABLED_HELP == "YZ netleştirme açıkken kullanılmaz."
+    js = _script_of(figs[-1][0])
+    assert AI in js and CLASSICAL not in js and _fit_zoom(re.sub(r"\s+", " ", js)) == 21
+    _toggle(at, "Netleştir (YZ)").set_value(False).run()
+    fx = _toggle(at, "Görüntü iyileştirme")
+    assert not fx.disabled and fx.value is False  # the stored choice is back, unchanged
+    js = _script_of(figs[-1][0])
+    assert AI not in js and CLASSICAL not in js  # classical was off
+    _toggle(at, "Görüntü iyileştirme").set_value(True).run()
+    _toggle(at, "Netleştir (YZ)").set_value(True).run()
+    assert _toggle(at, "Görüntü iyileştirme").value is True and CLASSICAL not in _script_of(figs[-1][0])
+
+
+def test_ai_crop_is_the_offset_footprint_bbox_plus_25_percent(mocked, roof_figs, sample_index, building_point):
+    calls, box, figs = roof_figs
+    at = _run_with_point(building_point)
+    _toggle(at, "Netleştir (YZ)").set_value(True).run()
+    _button(at, "5 m →").click().run()
+    footprint = shapely.from_wkb(_roof_inputs(sample_index, building_point)["footprint_wkb_m"])
+    expected = app.roof_fit_bounds(footprint, (5.0, 0.0), 0.25)
+    js = _script_of(figs[-1][0])
+    bbox = json.loads(re.search(r"var BBOX = (\[\[.*?\]\]),", js).group(1))
+    assert _flat(bbox) == pytest.approx(_flat(expected)) and app.ROOF_SR_MARGIN == 0.25
+
+
+def test_imagery_toggles_and_offset_changes_keep_drawings_and_the_fitted_view(mocked, roof_figs, sample_index, building_point):
+    calls, box, figs = roof_figs
+    at = _run_with_point(building_point)
     _draw_one(at, box, sample_index, building_point)
     stored, bounds = _obstacles(at), _bounds(at)
-    for change in (lambda: _button(at, "5 m →").click().run(), lambda: _button(at, "Sıfırla").click().run()):
+    for change in (
+        lambda: _toggle(at, "Görüntü iyileştirme").set_value(False).run(),
+        lambda: _button(at, "5 m →").click().run(),
+        lambda: _toggle(at, "Netleştir (YZ)").set_value(True).run(),
+        lambda: _button(at, "Sıfırla").click().run(),
+        lambda: _toggle(at, "Netleştir (YZ)").set_value(False).run(),
+    ):
         gen = _roof_draw(at)["gen"]
         change()
         assert not at.exception
@@ -224,7 +294,10 @@ def test_sifirla_restores_the_initial_fitted_view(mocked, roof_figs, sample_inde
     assert f"{initial[0][0]}" in _script(figs[-1][0])  # the map is built with the initial view again
 
 
-def test_esri_caption_says_never_sent_or_stored_and_keeps_the_attribution():
+def test_esri_caption_says_never_sent_or_stored_only_upscaled_in_the_browser_and_keeps_the_attribution():
     assert "analiz edilmez" not in app.ROOF_VIEW_CAPTION
-    assert "Görüntü hiçbir sunucuya veya yapay zekâ modeline gönderilmez ve saklanmaz." in app.ROOF_VIEW_CAPTION
+    assert (
+        "Görüntü sunucuya gönderilmez ve saklanmaz; Netleştir (YZ) açıkken yalnızca tarayıcınızda bir yapay zekâ "
+        "modeliyle büyütülür."
+    ) in app.ROOF_VIEW_CAPTION
     assert app.ROOF_VIEW_CAPTION.endswith(app.ESRI_ATTRIBUTION)

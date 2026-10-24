@@ -9,7 +9,7 @@ import streamlit as st
 from folium.plugins import Draw
 from streamlit_folium import st_folium
 
-from core import buildings, building_mode, cost, drawings, explain, layout, report, wayback
+from core import buildings, building_mode, cost, drawings, explain, imagery_fx, layout, report, superres, wayback
 from core.config import (
     BUILDING_ZOOM,
     BUILDINGS_BBOX,
@@ -77,7 +77,8 @@ ALIGN_CAPTION = (
 TR_AXIS_LABEL_EXPR = "replace(format(datum.value, ',.0f'), ',', '.')"
 ROOF_VIEW_CAPTION = (
     "Uydu görüntüsü (Esri World Imagery) yalnızca gösterim içindir; tarihi farklı olabilir ve yüksek binalarda çatı "
-    "birkaç metre kaymış görünebilir. Görüntü hiçbir sunucuya veya yapay zekâ modeline gönderilmez ve saklanmaz. "
+    "birkaç metre kaymış görünebilir. Görüntü sunucuya gönderilmez ve saklanmaz; Netleştir (YZ) açıkken yalnızca "
+    "tarayıcınızda bir yapay zekâ modeliyle büyütülür. "
     + ESRI_ATTRIBUTION
 )
 NOTE_AVERAGE = "Ortalama engel payı düşüldü — engelleri çizerek netleştirin"
@@ -1093,22 +1094,35 @@ TILE_SEAM_CSS = "<style>.roof-esri .leaflet-tile { width: 257px !important; heig
 KEY_ROOF_BOUNDS = "_roof_view_bounds"  # {"building": id, "bounds": [[s, w], [n, e]]}: the fixed roof-map view
 ROOF_FIT_MARGIN = 0.15  # share of the footprint bbox span added on every side
 ROOF_MAX_ZOOM = 22
-ROOF_MAX_FIT_ZOOM = 19.5  # the fitted view stops here: Esri has real imagery up to z19 in Istanbul, so close to 1:1
+ROOF_MAX_FIT_ZOOM = 20.0  # the fitted view stops here: the classical enhancement renders 2x native (z19) 1:1
+ROOF_MAX_FIT_ZOOM_AI = 21.0  # with 'Netleştir (YZ)': the 4x super-resolved roof is shown 1:1
+# 'Görüntü iyileştirme' toggle (classical canvas enhancement); the plain key keeps the choice while the map is hidden
+KEY_FX_ON, KEY_FX_ON_KEEP = "roof_fx_on", "_roof_fx_on_keep"
+FX_TOGGLE_LABEL = "Görüntü iyileştirme"
+FX_DISABLED_HELP = "YZ netleştirme açıkken kullanılmaz."
+ROOF_SR_MARGIN = 0.25  # super-resolution crop: share of the footprint bbox span added on every side
+# 'Netleştir (YZ)' toggle; the plain key keeps the choice while the map is hidden
+KEY_SR_ON, KEY_SR_ON_KEEP = "roof_sr_on", "_roof_sr_on_keep"
 ESRI_NATIVE_ZOOM = 19  # deepest Esri level used; above it tiles are upscaled instead of disappearing
 ROOF_MAP_HEIGHT = 620
 ROOF_TILE_CLASS = "roof-esri"
 FIT_VIEW_LABEL = "Görünümü çerçeveye ortala"
 
 
-def build_roof_map(center, draw_tools=True, aligning=False, bounds=None, wayback_key=None):
+def build_roof_map(
+    center, draw_tools=True, aligning=False, bounds=None, wayback_key=None, superres_bbox=None, enhance=False,
+):
     """Static part of the roof map: Esri World Imagery (DISPLAY ONLY, attribution kept) and the Draw control
     (rectangle and polygon only; editing off, deleting on). `draw_tools=False` (click-to-align mode) omits the
     toolbar so an alignment click can never add a vertex; `aligning` also shows a crosshair.
 
     The view is static: no dragging, zooming or zoom buttons. With `bounds` ([[s, w], [n, e]]) Leaflet fits the map
     to them on every build (zoomSnap 0.1, so the same fractional zoom each time). With `wayback_key` (the building
-    key) the browser-side imagery date selector (core/wayback) is added for the building at `center`. The tile layer
-    loads with crossOrigin "anonymous"."""
+    key) the browser-side imagery date selector (core/wayback) is added for the building at `center`. With
+    `superres_bbox` ([[s, w], [n, e]], the crop) the browser-side AI super-resolution (core/superres) is added and the
+    view fits up to ROOF_MAX_FIT_ZOOM_AI instead of ROOF_MAX_FIT_ZOOM. Otherwise `enhance` adds the classical canvas
+    enhancement (core/imagery_fx); the two never run together. The tile layer loads with crossOrigin "anonymous" so
+    the canvases are never tainted."""
     m = folium.Map(
         location=center, zoom_start=ROOF_VIEW_ZOOM, max_zoom=ROOF_MAX_ZOOM, tiles=None, zoom_control=False,
         scroll_wheel_zoom=False, dragging=False, double_click_zoom=False, touch_zoom=False, box_zoom=False,
@@ -1125,8 +1139,13 @@ def build_roof_map(center, draw_tools=True, aligning=False, bounds=None, wayback
     ).add_to(m)
     if wayback_key is not None:  # right after the layer: a stored date is applied before the fitted tiles load
         wayback.add_to_map(m, tiles, wayback_key, center, ESRI_TILES_URL)
+    if superres_bbox is not None:  # after the date selector: it reads the imagery URL that one sets
+        superres.add_to_map(m, tiles, superres_bbox)
     if bounds is not None:
-        m.fit_bounds(bounds, max_zoom=ROOF_MAX_FIT_ZOOM, padding=(10, 10))
+        max_zoom = ROOF_MAX_FIT_ZOOM_AI if superres_bbox is not None else ROOF_MAX_FIT_ZOOM
+        m.fit_bounds(bounds, max_zoom=max_zoom, padding=(10, 10))
+    if enhance and superres_bbox is None:  # after fit_bounds: the script must run once the fitted view exists
+        imagery_fx.add_to_map(m, tiles)
     if draw_tools:
         Draw(
             export=False, position="topleft", show_geometry_on_click=False,
@@ -1262,12 +1281,12 @@ def _cancel_align():
     _keep_alignment_open()
 
 
-def roof_fit_bounds(footprint, offset=(0.0, 0.0)):
-    """[[s, w], [n, e]] of the (offset-shifted) metric footprint in WGS84, widened by ROOF_FIT_MARGIN of each span."""
+def roof_fit_bounds(footprint, offset=(0.0, 0.0), margin=ROOF_FIT_MARGIN):
+    """[[s, w], [n, e]] of the (offset-shifted) metric footprint in WGS84, widened by `margin` of each span."""
     rings = drawings.polygon_to_latlon(footprint, offset)
     lats = [p[0] for ring in rings for p in ring]
     lons = [p[1] for ring in rings for p in ring]
-    d_lat, d_lon = (max(lats) - min(lats)) * ROOF_FIT_MARGIN, (max(lons) - min(lons)) * ROOF_FIT_MARGIN
+    d_lat, d_lon = (max(lats) - min(lats)) * margin, (max(lons) - min(lons)) * margin
     return [[min(lats) - d_lat, min(lons) - d_lon], [max(lats) + d_lat, max(lons) + d_lon]]
 
 
@@ -1287,6 +1306,33 @@ def _fit_view_to_frame(building_id, footprint_wkb):
     st.session_state[KEY_ROOF_BOUNDS] = {"building": building_id, "bounds": bounds}
     drawings.rebuild(draw)
     _keep_alignment_open()
+
+
+def _imagery_toggle_changed(key, keep_key):
+    """An imagery toggle switched on/off: keep the choice and rebuild the map (drawings, offset and date stay)."""
+    state = st.session_state
+    state[keep_key] = state.get(key)
+    drawings.rebuild(state[KEY_DRAWINGS])
+
+
+def imagery_controls(state):
+    """'Görüntü iyileştirme' (classical, default on) and 'Netleştir (YZ)' (AI, default off) above the roof map.
+    While the AI is on the classical toggle is disabled and keeps its stored value. Returns (enhance, ai)."""
+    if KEY_FX_ON not in state:  # hidden widgets lose their state: restore it first
+        state[KEY_FX_ON] = state.get(KEY_FX_ON_KEEP, True) is not False
+    if KEY_SR_ON not in state:
+        state[KEY_SR_ON] = state.get(KEY_SR_ON_KEEP, False) is True
+    ai = bool(state[KEY_SR_ON])
+    fx = st.toggle(
+        FX_TOGGLE_LABEL, key=KEY_FX_ON, on_change=_imagery_toggle_changed, args=(KEY_FX_ON, KEY_FX_ON_KEEP),
+        disabled=ai, help=FX_DISABLED_HELP if ai else None,
+    )
+    st.caption(imagery_fx.CAPTION)
+    ai = st.toggle(
+        superres.TOGGLE_LABEL, key=KEY_SR_ON, on_change=_imagery_toggle_changed, args=(KEY_SR_ON, KEY_SR_ON_KEEP),
+    )
+    st.caption(superres.CAPTION)
+    return bool(fx) and not ai, bool(ai)
 
 
 def alignment_control(draw, building=None):
@@ -1357,10 +1403,12 @@ def roof_view_section(state, building, roof=None, result=None):
         st.caption(ALIGN_CLICK_CAPTION)
         st.button(ALIGN_CANCEL_LABEL, key="align_cancel", on_click=_cancel_align)
     bounds = roof_view_bounds(state, building, footprint)
+    enhance, ai = imagery_controls(state)
+    sr_bbox = roof_fit_bounds(footprint, draw["offset"], ROOF_SR_MARGIN) if ai else None
     data = st_folium(
         build_roof_map(
             list(building["centroid"]), draw_tools=not aligning, aligning=aligning, bounds=bounds,
-            wayback_key=building_key(building),
+            wayback_key=building_key(building), superres_bbox=sr_bbox, enhance=enhance,
         ),
         key=drawings.map_key(draw),
         returned_objects=["all_drawings", "last_clicked"] if aligning else ["all_drawings"],

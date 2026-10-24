@@ -28,7 +28,8 @@ streamlit run app.py
 
 - Building data: © OpenStreetMap contributors and Microsoft ML Buildings, ODbL, via Overture Maps Foundation; building heights without a tag are an ML estimate (LightGBM trained on this data, no GlobalBuildingAtlas data)
 - Solar data: PVGIS v5.3, European Commission JRC
-- Satellite map tiles (display only, never sent to a model, stored or analysed): Esri World Imagery — "Tiles © Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community"
+- Satellite map tiles (never sent to a server or a remote model, never stored; optional in-browser super-resolution only): Esri World Imagery — "Tiles © Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community"
+- In-browser super-resolution model: Real-ESRGAN General x4v3 (Xintao Wang et al., BSD-3-Clause), ONNX export by Qualcomm AI Hub Models; run with ONNX Runtime Web (MIT). See `static/models/SOURCES.md`.
 - Irradiation layer: Global Solar Atlas (CC BY 4.0)
 - CO2 factor: ETKB TUESEF 2021; usable-area ratio: Ember; tariff: EPDK (AG tek terim mesken, 2026-04-04)
 

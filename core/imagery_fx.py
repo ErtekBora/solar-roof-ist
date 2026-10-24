@@ -1,20 +1,17 @@
 """Browser-side display enhancement of the roof map's Esri tiles: one canvas script (DISPLAY ONLY).
 
 Privacy/licence rule: Python never fetches, stores or reads a tile. The script runs in the user's browser, in memory
-only: it loads the native-zoom tiles covering the static view (crossOrigin "anonymous", same URL as the tile layer),
-stitches them into an offscreen canvas, processes the pixels and shows the result as an image overlay (blob URL)
-under the drawings. Nothing is uploaded, stored or sent to any model. The normal tile layer stays as the fallback and
-the OFF state; on any failure the overlay is removed and the tiles are shown again.
+only: it loads the native-zoom tiles covering the static view (crossOrigin "anonymous", the CURRENT imagery template:
+`map.roofImageryUrl`, set by core/wayback for the live layer or the chosen release), stitches them into an offscreen
+canvas, processes the pixels and shows the result as an image overlay (blob URL) under the drawings. Nothing is
+uploaded, stored or sent to any model. The normal tile layer stays as the fallback and the OFF state; on any failure
+the overlay is removed and the tiles are shown again.
 
-Pipeline, all in Float32 YCbCr (BT.601): RGB -> YCbCr once at the start, YCbCr -> RGB once at the end.
-  1x native, on Y: light self-guided filter (softens JPEG block edges), CLAHE blended with it, local clarity
-  (large-sigma unsharp), soft-threshold pre-sharpen.
-  S x (power of two from the fitted zoom, capped by MAX_OUTPUT_PIXELS): Y by separable Lanczos3 (or bilinear),
-  Cb/Cr by separable bilinear; then a fine and a medium soft-threshold unsharp band on Y; Cb/Cr x CHROMA_BOOST.
-Anti-ringing: after every sharpening stage and after Lanczos3, Y is clamped to the 3x3 min/max of that stage's input
-(for Lanczos3: of a bilinear upscale) +- RING_MARGIN, capped by the 3x3 min/max of the unsharpened Y, so edges get
-steeper without dark/bright halos.
-No S-curve, gamma or saturation. The tunable constants are at the top of PIPELINE_JS.
+Pipeline (the first canvas look, luminance only, colour from the original):
+  1x native: RGB -> YCbCr (BT.601); Y: self-guided filter (edge-preserving denoise/deblock), then CLAHE blended with
+  the denoised Y; back to RGB with Cb/Cr x CHROMA_BOOST.
+  OUTPUT_SCALE x: drawImage upscale (imageSmoothingQuality "high"), then a soft-threshold unsharp mask on Y.
+The tunable constants are at the top of PIPELINE_JS.
 Docs: https://leafletjs.com/reference.html#tilelayer-crossorigin  https://leafletjs.com/reference.html#map-unproject
 https://leafletjs.com/reference.html#map-createpane  https://leafletjs.com/reference.html#imageoverlay
 https://developer.mozilla.org/en-US/docs/Web/API/CanvasRenderingContext2D/getImageData
@@ -27,36 +24,30 @@ from core.config import ESRI_TILES_URL
 NATIVE_ZOOM = 19  # must match app.ESRI_NATIVE_ZOOM
 PANE = "roofEnhanced"
 CACHE_MAX = 4  # processed views kept in browser memory (window.parent.__roofFxCache)
+CACHE_NAME = "__roofFxCache"  # never shared with the AI super-resolution cache (core/superres)
 CAPTION = (
     "İyileştirme yalnızca tarayıcınızda, bellekte yapılır (gürültü azaltma, yerel kontrast, keskinleştirme). Görüntü "
     "sunucuya gönderilmez, saklanmaz ve yapay zekâya verilmez. Gerçek çözünürlüğü artırmaz."
 )
 
-# Pure pixel functions (no DOM, no Leaflet): enhance(rgba, W, H, S) returns the S x RGBA result. No Jinja syntax
-# inside, so the same text can be run outside the map (e.g. with Node).
+# Pure pixel functions (no DOM, no Leaflet): processNative(rgba, W, H) and sharpenScaled(rgba, W, H) work in place on
+# ImageData.data. No Jinja syntax inside, so the same text can be run outside the map (e.g. with Node).
 PIPELINE_JS = """
 var TILE_MARGIN = 0;                  // native tiles added around the view on every side
 var MAX_MOSAIC_PIXELS = 1600 * 1200;  // 1x mosaic cap; above it the plain tiles stay
-var MAX_OUTPUT_PIXELS = 2048 * 2048;  // output cap; S is halved until W * H * S * S fits
-var GUIDED_RADIUS = 1;                // guided filter box radius (native px)
-var GUIDED_EPS = 0.01 * 0.01;         // guided filter regulariser (Y on 0..1)
+var GUIDED_RADIUS = 2;                // guided filter box radius (native px)
+var GUIDED_EPS = 0.02 * 0.02;         // guided filter regulariser (Y on 0..1)
 var CLAHE_GRID_X = 8;                 // CLAHE cells across the mosaic
 var CLAHE_GRID_Y = 4;                 // CLAHE cells down the mosaic
-var CLAHE_CLIP = 1.8;                 // histogram clip limit (x the uniform bin height)
-var CLAHE_BLEND = 0.35;               // share of CLAHE in the result (rest: guided Y)
-var CLARITY_SIGMA = 10;               // local clarity blur sigma (native px)
-var CLARITY_AMOUNT = 0.15;            // local clarity strength
-var PRE_USM_SIGMA = 0.75;             // pre-sharpen sigma (native px)
-var PRE_USM_AMOUNT = 0.5;             // pre-sharpen strength
-var PRE_USM_THRESHOLD = 1 / 255;      // pre-sharpen soft threshold
-var UPSCALER = "lanczos3";            // Y upscaler: "lanczos3" or "bilinear" (Cb/Cr always bilinear)
-var USM_FINE_SIGMA = 0.5;             // fine band sigma, x S (output px)
-var USM_FINE_AMOUNT = 0.7;            // fine band strength
-var USM_MED_SIGMA = 1.4;              // medium band sigma, x S (output px)
-var USM_MED_AMOUNT = 0.3;             // medium band strength
-var USM_THRESHOLD = 1 / 255;          // soft threshold of both bands
-var RING_MARGIN = 2 / 255;            // anti-ringing: allowed excursion beyond the input's 3x3 min/max
+var CLAHE_CLIP = 2.5;                 // histogram clip limit (x the uniform bin height)
+var CLAHE_BLEND = 0.7;                // share of CLAHE in the result (rest: denoised Y)
+var USM_SIGMA = 1.2;                  // unsharp-mask Gaussian sigma (output px)
+var USM_AMOUNT = 1.0;                 // unsharp-mask strength
+var USM_THRESHOLD = 2 / 255;          // unsharp-mask soft threshold (Y on 0..1)
+var OUTPUT_SCALE = 2;                 // overlay resolution / native resolution
 var CHROMA_BOOST = 1.05;              // Cb/Cr scale around 0 (keep <= 1.1)
+
+function clamp01(v) { return v < 0 ? 0 : (v > 1 ? 1 : v); }
 
 function splitYCbCr(rgba, n) {  // BT.601 full range, all channels on 0..1, Cb/Cr centred at 0
     var Y = new Float32Array(n), Cb = new Float32Array(n), Cr = new Float32Array(n);
@@ -69,16 +60,14 @@ function splitYCbCr(rgba, n) {  // BT.601 full range, all channels on 0..1, Cb/C
     return {Y: Y, Cb: Cb, Cr: Cr};
 }
 
-function mergeYCbCr(Y, Cb, Cr, n, chroma) {  // the only conversion back to 8 bit (clamped, alpha 255)
-    var rgba = new Uint8ClampedArray(n * 4);
+function mergeYCbCr(rgba, n, Y, Cb, Cr, chroma) {
     for (var i = 0, j = 0; i < n; i++, j += 4) {
         var y = Y[i], cb = Cb[i] * chroma, cr = Cr[i] * chroma;
-        rgba[j] = (y + 1.402 * cr) * 255 + 0.5;
-        rgba[j + 1] = (y - 0.344136 * cb - 0.714136 * cr) * 255 + 0.5;
-        rgba[j + 2] = (y + 1.772 * cb) * 255 + 0.5;
+        rgba[j] = Math.round(clamp01(y + 1.402 * cr) * 255);
+        rgba[j + 1] = Math.round(clamp01(y - 0.344136 * cb - 0.714136 * cr) * 255);
+        rgba[j + 2] = Math.round(clamp01(y + 1.772 * cb) * 255);
         rgba[j + 3] = 255;
     }
-    return rgba;
 }
 
 // Summed-area tables are Float64Array on purpose: the guided filter needs var = mean(Y^2) - mean(Y)^2, a small
@@ -126,11 +115,9 @@ function guidedSelf(Y, W, H, r, eps) {  // He et al. guided filter with I = p = 
         }
     }
     var mA = boxMean(A, W, H, r), mB = boxMean(B, W, H, r), q = new Float32Array(n);
-    for (var i = 0; i < n; i++) q[i] = mA[i] * Y[i] + mB[i];
+    for (var i = 0; i < n; i++) q[i] = clamp01(mA[i] * Y[i] + mB[i]);
     return q;
 }
-
-function bin256(v) { var b = Math.floor(v * 256); return b < 0 ? 0 : (b > 255 ? 255 : b); }
 
 function clahe(Y, W, H, gx, gy, clip) {  // 256-bin CLAHE, bilinear interpolation between cell LUTs
     var cw = W / gx, ch = H / gy, luts = [], cx, cy;
@@ -138,7 +125,7 @@ function clahe(Y, W, H, gx, gy, clip) {  // 256-bin CLAHE, bilinear interpolatio
         for (cx = 0; cx < gx; cx++) {
             var xa = Math.floor(cx * cw), xb = Math.floor((cx + 1) * cw), ya = Math.floor(cy * ch), yb = Math.floor((cy + 1) * ch);
             var hist = new Float64Array(256), count = (xb - xa) * (yb - ya);
-            for (var y = ya; y < yb; y++) for (var x = xa; x < xb; x++) hist[bin256(Y[y * W + x])]++;
+            for (var y = ya; y < yb; y++) for (var x = xa; x < xb; x++) hist[Math.min(255, Math.floor(Y[y * W + x] * 256))]++;
             var limit = Math.max(1, clip * count / 256), excess = 0, k;
             for (k = 0; k < 256; k++) if (hist[k] > limit) { excess += hist[k] - limit; hist[k] = limit; }
             var lut = new Float32Array(256), cdf = 0, add = excess / 256;
@@ -161,7 +148,7 @@ function clahe(Y, W, H, gx, gy, clip) {  // 256-bin CLAHE, bilinear interpolatio
         var r0 = ay.i0[py], r1 = Math.min(r0 + 1, gy - 1), fy = ay.f[py];
         for (var px = 0; px < W; px++) {
             var c0 = ax.i0[px], c1 = Math.min(c0 + 1, gx - 1), fx = ax.f[px];
-            var b = bin256(Y[py * W + px]);
+            var b = Math.min(255, Math.floor(Y[py * W + px] * 256));
             var top = luts[r0 * gx + c0][b] * (1 - fx) + luts[r0 * gx + c1][b] * fx;
             var bot = luts[r1 * gx + c0][b] * (1 - fx) + luts[r1 * gx + c1][b] * fx;
             out[py * W + px] = top * (1 - fy) + bot * fy;
@@ -170,229 +157,56 @@ function clahe(Y, W, H, gx, gy, clip) {  // 256-bin CLAHE, bilinear interpolatio
     return out;
 }
 
-function gaussianBlur(src, W, H, sigma) {  // separable 1D Gaussian kernels, edges clamped (sigma < 1.5)
+function gaussianBlur(src, W, H, sigma) {  // separable, edges clamped
     var rad = Math.max(1, Math.ceil(3 * sigma)), k = new Float32Array(2 * rad + 1), sum = 0, i;
     for (i = -rad; i <= rad; i++) { k[i + rad] = Math.exp(-(i * i) / (2 * sigma * sigma)); sum += k[i + rad]; }
     for (i = 0; i < k.length; i++) k[i] /= sum;
-    var tmp = new Float32Array(W * H), out = new Float32Array(W * H), klen = k.length, x, y, t, acc, o;
+    var tmp = new Float32Array(W * H), out = new Float32Array(W * H), x, y, t, acc;
     for (y = 0; y < H; y++) {
-        o = y * W;
         for (x = 0; x < W; x++) {
             acc = 0;
-            if (x >= rad && x < W - rad) {  // interior: no clamping
-                var base = o + x - rad;
-                for (t = 0; t < klen; t++) acc += k[t] * src[base + t];
-            } else {
-                for (t = -rad; t <= rad; t++) acc += k[t + rad] * src[o + Math.min(W - 1, Math.max(0, x + t))];
-            }
-            tmp[o + x] = acc;
+            for (t = -rad; t <= rad; t++) acc += k[t + rad] * src[y * W + Math.min(W - 1, Math.max(0, x + t))];
+            tmp[y * W + x] = acc;
         }
     }
     for (y = 0; y < H; y++) {
-        o = y * W;
-        for (t = -rad; t <= rad; t++) {
-            var kt = k[t + rad], row = Math.min(H - 1, Math.max(0, y + t)) * W;
-            for (x = 0; x < W; x++) out[o + x] += kt * tmp[row + x];
+        for (x = 0; x < W; x++) {
+            acc = 0;
+            for (t = -rad; t <= rad; t++) acc += k[t + rad] * tmp[Math.min(H - 1, Math.max(0, y + t)) * W + x];
+            out[y * W + x] = acc;
         }
     }
     return out;
 }
 
-function boxesForGauss(sigma, n) {  // n box widths whose repeated box blur approximates a Gaussian of sigma
-    var wIdeal = Math.sqrt(12 * sigma * sigma / n + 1), wl = Math.floor(wIdeal);
-    if (wl % 2 === 0) wl--;
-    var wu = wl + 2, m = Math.round((12 * sigma * sigma - n * wl * wl - 4 * n * wl - 3 * n) / (-4 * wl - 4));
-    var sizes = [];
-    for (var i = 0; i < n; i++) sizes.push(i < m ? wl : wu);
-    return sizes;
+function processNative(rgba, W, H) {  // 1x: denoise + local contrast on Y, chroma from the original
+    var n = W * H, c = splitYCbCr(rgba, n);
+    var q = guidedSelf(c.Y, W, H, GUIDED_RADIUS, GUIDED_EPS);
+    var e = clahe(q, W, H, CLAHE_GRID_X, CLAHE_GRID_Y, CLAHE_CLIP);
+    for (var i = 0; i < n; i++) e[i] = CLAHE_BLEND * e[i] + (1 - CLAHE_BLEND) * q[i];
+    mergeYCbCr(rgba, n, e, c.Cb, c.Cr, CHROMA_BOOST);
 }
 
-function boxPassH(src, dst, W, H, r) {  // O(N) sliding window along rows, edges clamped
-    var norm = 1 / (2 * r + 1);
-    for (var y = 0; y < H; y++) {
-        var o = y * W, acc = 0, k;
-        for (k = -r; k <= r; k++) acc += src[o + Math.min(W - 1, Math.max(0, k))];
-        for (var x = 0; x < W; x++) {
-            dst[o + x] = acc * norm;
-            acc += src[o + Math.min(W - 1, x + r + 1)] - src[o + Math.max(0, x - r)];
-        }
+function sharpenScaled(rgba, W, H) {  // OUTPUT_SCALE x: soft-threshold unsharp mask on Y, Cb/Cr unchanged
+    var n = W * H, c = splitYCbCr(rgba, n), blur = gaussianBlur(c.Y, W, H, USM_SIGMA), Y = c.Y;
+    for (var i = 0; i < n; i++) {
+        var d = Y[i] - blur[i];
+        var detail = Math.sign(d) * Math.max(0, Math.abs(d) - USM_THRESHOLD);
+        Y[i] = Y[i] + USM_AMOUNT * detail;
     }
-}
-
-function boxPassV(src, dst, W, H, r) {  // O(N) sliding window along columns, edges clamped
-    var norm = 1 / (2 * r + 1), acc = new Float64Array(W), x, k, o;
-    for (k = -r; k <= r; k++) { o = Math.min(H - 1, Math.max(0, k)) * W; for (x = 0; x < W; x++) acc[x] += src[o + x]; }
-    for (var y = 0; y < H; y++) {
-        var add = Math.min(H - 1, y + r + 1) * W, sub = Math.max(0, y - r) * W;
-        o = y * W;
-        for (x = 0; x < W; x++) { dst[o + x] = acc[x] * norm; acc[x] += src[add + x] - src[sub + x]; }
-    }
-}
-
-function boxBlur3(src, W, H, sigma) {  // 3-pass box blur approximating a Gaussian (sigma >= 1.5)
-    var sizes = boxesForGauss(sigma, 3), a = Float32Array.from(src), b = new Float32Array(W * H);
-    for (var i = 0; i < 3; i++) {
-        var r = (sizes[i] - 1) / 2;
-        boxPassH(a, b, W, H, r);
-        boxPassV(b, a, W, H, r);
-    }
-    return a;
-}
-
-function blur(src, W, H, sigma) { return sigma < 1.5 ? gaussianBlur(src, W, H, sigma) : boxBlur3(src, W, H, sigma); }
-
-function minMax3(src, W, H, buf) {  // 3x3 local min and max as separable 1D passes, edges clamped; reuses `buf`
-    var n = W * H;
-    if (!buf || buf.min.length !== n) {
-        buf = {min: new Float32Array(n), max: new Float32Array(n), tMin: new Float32Array(n), tMax: new Float32Array(n)};
-    }
-    var mn = buf.min, mx = buf.max, tMin = buf.tMin, tMax = buf.tMax, x, y, o, a, b, c, lo, hi;
-    for (y = 0; y < H; y++) {  // rows
-        o = y * W;
-        for (x = 0; x < W; x++) {
-            a = src[o + (x > 0 ? x - 1 : 0)]; b = src[o + x]; c = src[o + (x < W - 1 ? x + 1 : x)];
-            lo = a < b ? a : b; hi = a > b ? a : b;
-            tMin[o + x] = lo < c ? lo : c; tMax[o + x] = hi > c ? hi : c;
-        }
-    }
-    for (y = 0; y < H; y++) {  // columns
-        var up = (y > 0 ? y - 1 : 0) * W, dn = (y < H - 1 ? y + 1 : y) * W;
-        o = y * W;
-        for (x = 0; x < W; x++) {
-            a = tMin[up + x]; b = tMin[o + x]; c = tMin[dn + x];
-            lo = a < b ? a : b; mn[o + x] = lo < c ? lo : c;
-            a = tMax[up + x]; b = tMax[o + x]; c = tMax[dn + x];
-            hi = a > b ? a : b; mx[o + x] = hi > c ? hi : c;
-        }
-    }
-    return buf;
-}
-
-// Anti-ringing: each pixel stays within its stage input's 3x3 [min, max] +- margin. Clamping against each stage's
-// own input alone lets the margin pile up over the five stages (~8/255 on a hard edge), so the bounds are also capped
-// by `env`, the 3x3 [min, max] of the unsharpened Y: the total excursion stays within one margin.
-function clampRing(Y, mm, margin, env) {
-    var mn = mm.min, mx = mm.max, en = env.min, ex = env.max;
-    for (var i = 0; i < Y.length; i++) {
-        var lo = (mn[i] > en[i] ? mn[i] : en[i]) - margin, hi = (mx[i] < ex[i] ? mx[i] : ex[i]) + margin, v = Y[i];
-        if (lo > hi) lo = hi = 0.5 * (lo + hi);
-        Y[i] = v < lo ? lo : (v > hi ? hi : v);
-    }
-}
-
-function envelope(Y, W, H) {  // 3x3 [min, max] kept as the anchor (its temporary buffers are dropped)
-    var env = minMax3(Y, W, H, null);
-    env.tMin = env.tMax = null;
-    return env;
-}
-
-function lanczos3(t) {
-    if (t === 0) return 1;
-    if (t <= -3 || t >= 3) return 0;
-    var a = Math.PI * t;
-    return 3 * Math.sin(a) * Math.sin(a / 3) / (a * a);
-}
-
-function bilinear(t) { t = Math.abs(t); return t < 1 ? 1 - t : 0; }
-
-function resampleAxis(len, S, kernel, radius) {  // taps and normalised weights for each output coordinate
-    var outLen = len * S, taps = 2 * radius, idx = new Int32Array(outLen * taps), w = new Float32Array(outLen * taps);
-    for (var o = 0; o < outLen; o++) {
-        var u = (o + 0.5) / S - 0.5, start = Math.floor(u) - radius + 1, sum = 0, k;
-        for (k = 0; k < taps; k++) {
-            var i = start + k, wk = kernel(u - i);
-            idx[o * taps + k] = Math.min(len - 1, Math.max(0, i));
-            w[o * taps + k] = wk;
-            sum += wk;
-        }
-        for (k = 0; k < taps; k++) w[o * taps + k] /= sum;
-    }
-    return {idx: idx, w: w, taps: taps, outLen: outLen};
-}
-
-function upscale(src, W, H, S, kernel, radius) {  // separable: rows, then columns; Float32 in/out, no clamping
-    var ax = resampleAxis(W, S, kernel, radius), ay = resampleAxis(H, S, kernel, radius);
-    var W2 = ax.outLen, H2 = ay.outLen, tmp = new Float32Array(W2 * H), out = new Float32Array(W2 * H2);
-    var t = ax.taps, x, y, k, b, o, acc;
-    for (y = 0; y < H; y++) {
-        var row = y * W;
-        o = y * W2;
-        for (x = 0; x < W2; x++) {
-            acc = 0; b = x * t;
-            for (k = 0; k < t; k++) acc += ax.w[b + k] * src[row + ax.idx[b + k]];
-            tmp[o + x] = acc;
-        }
-    }
-    t = ay.taps;
-    for (y = 0; y < H2; y++) {
-        o = y * W2; b = y * t;
-        for (k = 0; k < t; k++) {
-            var wk = ay.w[b + k], src2 = ay.idx[b + k] * W2;
-            for (x = 0; x < W2; x++) out[o + x] += wk * tmp[src2 + x];
-        }
-    }
-    return out;
-}
-
-function enhance(rgba, W, H, S) {  // 1x RGBA in, {data, width, height} at S x out
-    var n = W * H, c = splitYCbCr(rgba, n), i, d, mm;
-    var Y = guidedSelf(c.Y, W, H, GUIDED_RADIUS, GUIDED_EPS);  // a. soften JPEG block edges only
-    var e = clahe(Y, W, H, CLAHE_GRID_X, CLAHE_GRID_Y, CLAHE_CLIP);  // b. local contrast
-    for (i = 0; i < n; i++) Y[i] = CLAHE_BLEND * e[i] + (1 - CLAHE_BLEND) * Y[i];
-    var ref = Float32Array.from(Y), env = envelope(ref, W, H);  // the unsharpened Y and its 3x3 anchor
-    var cl = blur(Y, W, H, CLARITY_SIGMA);  // c. local clarity (its input is `ref`, so its 3x3 range is `env`)
-    for (i = 0; i < n; i++) Y[i] += CLARITY_AMOUNT * (Y[i] - cl[i]);
-    clampRing(Y, env, RING_MARGIN, env);
-    mm = minMax3(Y, W, H, null);  // d. pre-sharpen
-    var pb = blur(Y, W, H, PRE_USM_SIGMA);
-    for (i = 0; i < n; i++) {
-        d = Y[i] - pb[i];
-        Y[i] += PRE_USM_AMOUNT * Math.sign(d) * Math.max(0, Math.abs(d) - PRE_USM_THRESHOLD);
-    }
-    clampRing(Y, mm, RING_MARGIN, env);
-    var Cb = c.Cb, Cr = c.Cr, W2 = W * S, H2 = H * S, n2 = W2 * H2;
-    if (S > 1) {
-        env = envelope(upscale(ref, W, H, S, bilinear, 1), W2, H2);  // the anchor at S x
-        var Yb = upscale(Y, W, H, S, bilinear, 1);
-        if (UPSCALER === "bilinear") {
-            Y = Yb;
-        } else {
-            Y = upscale(Y, W, H, S, lanczos3, 3);
-            mm = minMax3(Yb, W2, H2, null);
-            clampRing(Y, mm, RING_MARGIN, env);  // removes the Lanczos3 overshoot
-        }
-        Yb = null;
-        Cb = upscale(Cb, W, H, S, bilinear, 1);
-        Cr = upscale(Cr, W, H, S, bilinear, 1);
-    }
-    mm = minMax3(Y, W2, H2, mm);  // fine band
-    var fine = blur(Y, W2, H2, USM_FINE_SIGMA * S);
-    for (i = 0; i < n2; i++) {
-        d = Y[i] - fine[i];
-        Y[i] += USM_FINE_AMOUNT * Math.sign(d) * Math.max(0, Math.abs(d) - USM_THRESHOLD);
-    }
-    clampRing(Y, mm, RING_MARGIN, env);
-    fine = null;
-    mm = minMax3(Y, W2, H2, mm);  // medium band
-    var med = blur(Y, W2, H2, USM_MED_SIGMA * S);
-    for (i = 0; i < n2; i++) {
-        d = Y[i] - med[i];
-        Y[i] += USM_MED_AMOUNT * Math.sign(d) * Math.max(0, Math.abs(d) - USM_THRESHOLD);
-    }
-    clampRing(Y, mm, RING_MARGIN, env);
-    return {data: mergeYCbCr(Y, Cb, Cr, n2, CHROMA_BOOST), width: W2, height: H2};
+    mergeYCbCr(rgba, n, Y, c.Cb, c.Cr, 1);
 }
 """
 
 
 class CanvasEnhanceScript(MacroElement):
-    """Show the enhanced overlay for the fitted view, from the in-memory cache when the same tile range, scale and
+    """Show the enhanced overlay for the fitted view, from the in-memory cache when the same imagery, tile range and
     constants were processed before. Falls back to the plain tiles (one console.warn) on any failure.
 
     Timing: folium's fitBounds runs on an already loaded map, so Leaflet animates the zoom: the new zoom arrives in a
-    later animation frame and zoomend after the animation. whenReady + setTimeout 0 raced that frame and could read
-    the initial zoom (19, so S = 1, and the pre-fit bounds). Now whenReady, zoomend and resize all (re)schedule the
-    run SETTLE_MS later, the run skips an unchanged view and a superseded build is discarded.
+    later animation frame and zoomend after the animation. whenReady, zoomend and resize all (re)schedule the run
+    SETTLE_MS later, the run skips an unchanged view and a superseded build is discarded. A "roofimagerychange" event
+    (core/wayback switched the imagery) drops the overlay and runs again from the new imagery.
 
     Cache: a Map on window.parent (`__roofFxCache`, at most CACHE_MAX entries, oldest dropped), plain JS memory only,
     gone when the page is closed. Every map rebuild is a new iframe and a blob URL dies with the document that made
@@ -404,15 +218,14 @@ class CanvasEnhanceScript(MacroElement):
         (function () {
             {{ this.pipeline }}
             var NZ = {{ this.native }};
-            var TILE = 256, CACHE_MAX = {{ this.cache_max }};
+            var TILE = 256, CACHE_MAX = {{ this.cache_max }}, CACHE_NAME = {{ this.cache_name|tojson }};
             var TILE_URL = {{ this.tile_url|tojson }};
             var map = {{ this._parent.get_name() }};
             var tiles = {{ this.tile_layer_name }};
-            var overlay = null, overlayUrl = null, failed = false;
-            var PARAMS_HASH = hashString([TILE_MARGIN, MAX_MOSAIC_PIXELS, MAX_OUTPUT_PIXELS, GUIDED_RADIUS, GUIDED_EPS,
-                CLAHE_GRID_X, CLAHE_GRID_Y, CLAHE_CLIP, CLAHE_BLEND, CLARITY_SIGMA, CLARITY_AMOUNT, PRE_USM_SIGMA,
-                PRE_USM_AMOUNT, PRE_USM_THRESHOLD, UPSCALER, USM_FINE_SIGMA, USM_FINE_AMOUNT, USM_MED_SIGMA, USM_MED_AMOUNT,
-                USM_THRESHOLD, RING_MARGIN, CHROMA_BOOST].join(","));
+            var overlay = null, overlayUrl = null, failed = false, warned = false;
+            var PARAMS_HASH = hashString([TILE_MARGIN, MAX_MOSAIC_PIXELS, GUIDED_RADIUS, GUIDED_EPS, CLAHE_GRID_X,
+                CLAHE_GRID_Y, CLAHE_CLIP, CLAHE_BLEND, USM_SIGMA, USM_AMOUNT, USM_THRESHOLD, OUTPUT_SCALE,
+                CHROMA_BOOST].join(","));
             var SETTLE_MS = 300;  // > Leaflet's 250 ms zoom animation: the fitted zoom and bounds are final by then
             var settleTimer = null, currentKey = null, runId = 0;
 
@@ -421,12 +234,15 @@ class CanvasEnhanceScript(MacroElement):
                 for (var i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
                 return h.toString(16);
             }
+            function imageryUrl() {  // the current imagery template (live or the chosen Wayback release)
+                return map.roofImageryUrl !== undefined ? map.roofImageryUrl : TILE_URL;
+            }
             function revoke(url) { if (url) { try { URL.revokeObjectURL(url); } catch (err) {} } }
             function getCache() {  // null when window.parent is unreachable: then no cache
                 try {
                     var w = window.parent;
-                    if (!w.__roofFxCache) w.__roofFxCache = new w.Map();
-                    return w.__roofFxCache;
+                    if (!w[CACHE_NAME]) w[CACHE_NAME] = new w.Map();
+                    return w[CACHE_NAME];
                 } catch (err) { return null; }
             }
             function cacheGet(key) {  // a hit becomes the newest entry
@@ -468,15 +284,16 @@ class CanvasEnhanceScript(MacroElement):
             function fail(err) {  // back to the original tiles
                 removeOverlay();
                 setTileOpacity(1);
-                if (!failed) { failed = true; console.warn("roofEnhanced: enhancement off, original tiles shown:", err); }
+                failed = true;
+                if (!warned) { warned = true; console.warn("roofEnhanced: enhancement off, original tiles shown:", err); }
             }
-            function loadTile(x, y) {
+            function loadTile(url, x, y) {
                 return new Promise(function (resolve, reject) {
                     var img = new Image();
                     img.crossOrigin = "anonymous";
                     img.onload = function () { resolve({img: img, x: x, y: y}); };
                     img.onerror = function () { reject(new Error("tile load failed " + NZ + "/" + y + "/" + x)); };
-                    img.src = L.Util.template(TILE_URL, {z: NZ, x: x, y: y});
+                    img.src = L.Util.template(url, {z: NZ, x: x, y: y});
                 });
             }
             function show(blob, nw, se, entry, onError) {  // `entry`: the cache entry that owns the URL, or null
@@ -487,15 +304,15 @@ class CanvasEnhanceScript(MacroElement):
                 var pane = map.getPane("{{ this.pane }}") || map.createPane("{{ this.pane }}");
                 pane.style.zIndex = 250;
                 pane.style.pointerEvents = "none";
-                overlay = L.imageOverlay(url, L.latLngBounds(nw, se), {pane: "{{ this.pane }}", interactive: false});
-                overlay.on("load", function () { if (!failed) setTileOpacity(0); });
+                var mine = overlay = L.imageOverlay(url, L.latLngBounds(nw, se), {pane: "{{ this.pane }}", interactive: false});
+                overlay.on("load", function () { if (!failed && overlay === mine) setTileOpacity(0); });
                 overlay.on("error", onError);
                 overlay.addTo(map);
             }
-            function build(key, run, xMin, yMin, xMax, yMax, S, nw, se) {
+            function build(key, run, url, xMin, yMin, xMax, yMax, nw, se) {
                 var t0 = performance.now(), nx = xMax - xMin + 1, ny = yMax - yMin + 1, W = nx * TILE, H = ny * TILE;
                 var jobs = [];
-                for (var ty = yMin; ty <= yMax; ty++) for (var tx = xMin; tx <= xMax; tx++) jobs.push(loadTile(tx, ty));
+                for (var ty = yMin; ty <= yMax; ty++) for (var tx = xMin; tx <= xMax; tx++) jobs.push(loadTile(url, tx, ty));
                 Promise.all(jobs).then(function (loaded) {
                     if (run !== runId) return;  // a newer view superseded this one
                     var t1 = performance.now();
@@ -504,14 +321,19 @@ class CanvasEnhanceScript(MacroElement):
                     var mctx = mosaic.getContext("2d");
                     loaded.forEach(function (t) { mctx.drawImage(t.img, (t.x - xMin) * TILE, (t.y - yMin) * TILE); });
                     var native = mctx.getImageData(0, 0, W, H);  // throws on a tainted canvas
-                    var r = enhance(native.data, W, H, S);
+                    processNative(native.data, W, H);
+                    mctx.putImageData(native, 0, 0);
                     var out = document.createElement("canvas");
-                    out.width = r.width; out.height = r.height;
-                    var octx = out.getContext("2d"), img = octx.createImageData(r.width, r.height);
-                    img.data.set(r.data);
-                    octx.putImageData(img, 0, 0);
+                    out.width = W * OUTPUT_SCALE; out.height = H * OUTPUT_SCALE;
+                    var octx = out.getContext("2d");
+                    octx.imageSmoothingEnabled = true;
+                    octx.imageSmoothingQuality = "high";
+                    octx.drawImage(mosaic, 0, 0, out.width, out.height);
+                    var scaled = octx.getImageData(0, 0, out.width, out.height);
+                    sharpenScaled(scaled.data, out.width, out.height);
+                    octx.putImageData(scaled, 0, 0);
                     var t2 = performance.now();
-                    console.info("roofEnhanced: " + W + "x" + H + " -> " + r.width + "x" + r.height + " (S=" + S + ") in "
+                    console.info("roofEnhanced: " + W + "x" + H + " -> " + out.width + "x" + out.height + " in "
                         + Math.round(t2 - t0) + " ms (tiles " + Math.round(t1 - t0) + " ms, processing "
                         + Math.round(t2 - t1) + " ms)");
                     out.toBlob(function (blob) {
@@ -537,12 +359,11 @@ class CanvasEnhanceScript(MacroElement):
                     var xMax = Math.floor(p1.x / TILE) + TILE_MARGIN, yMax = Math.floor(p1.y / TILE) + TILE_MARGIN;
                     var W = (xMax - xMin + 1) * TILE, H = (yMax - yMin + 1) * TILE;
                     if (W * H > MAX_MOSAIC_PIXELS) throw new Error("mosaic too large: " + W + "x" + H);
-                    var S = Math.min(4, Math.max(1, Math.pow(2, Math.ceil(map.getZoom()) - NZ)));
-                    while (S > 1 && W * H * S * S > MAX_OUTPUT_PIXELS) S = S >> 1;
                     var nw = map.unproject(L.point(xMin * TILE, yMin * TILE), NZ);
                     var se = map.unproject(L.point((xMax + 1) * TILE, (yMax + 1) * TILE), NZ);
-                    var key = [NZ, xMin, xMax, yMin, yMax, S, PARAMS_HASH].join("|");
-                    if (key === currentKey) return;  // same view: nothing to redo
+                    var url = imageryUrl();
+                    var key = [url, NZ, xMin, xMax, yMin, yMax, OUTPUT_SCALE, PARAMS_HASH].join("|");
+                    if (key === currentKey) return;  // same view and imagery: nothing to redo
                     currentKey = key;
                     var run = ++runId;
                     var hit = cacheGet(key);
@@ -551,7 +372,7 @@ class CanvasEnhanceScript(MacroElement):
                             show(hit.blob, nw, se, hit, function () {  // a stale entry: drop it and process again
                                 cacheDrop(key);
                                 removeOverlay();
-                                try { build(key, run, xMin, yMin, xMax, yMax, S, nw, se); } catch (err) { fail(err); }
+                                try { build(key, run, url, xMin, yMin, xMax, yMax, nw, se); } catch (err) { fail(err); }
                             });
                             console.info("roofEnhanced: cached result reused (" + key + ")");
                             return;
@@ -559,13 +380,21 @@ class CanvasEnhanceScript(MacroElement):
                             cacheDrop(key);
                         }
                     }
-                    build(key, run, xMin, yMin, xMax, yMax, S, nw, se);
+                    build(key, run, url, xMin, yMin, xMax, yMax, nw, se);
                 } catch (err) {
                     fail(err);
                 }
             }
             map.whenReady(schedule);
             map.on("zoomend resize", schedule);
+            map.on("roofimagerychange", function () {  // other imagery: never show the old overlay over it
+                runId++;
+                currentKey = null;
+                failed = false;
+                removeOverlay();
+                setTileOpacity(1);
+                schedule();
+            });
         })();
         {% endmacro %}
         """
@@ -575,7 +404,7 @@ class CanvasEnhanceScript(MacroElement):
         super().__init__()
         self._name = "CanvasEnhanceScript"
         self.pipeline, self.native, self.tile_url, self.pane = PIPELINE_JS, NATIVE_ZOOM, ESRI_TILES_URL, PANE
-        self.cache_max = CACHE_MAX
+        self.cache_max, self.cache_name = CACHE_MAX, CACHE_NAME
         self.tile_layer_name = tile_layer.get_name() if tile_layer is not None else "null"
 
 

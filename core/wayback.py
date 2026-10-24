@@ -83,6 +83,7 @@ class WaybackScript(MacroElement):
             var CONCURRENCY = {{ this.concurrency }}, TIMEOUT_MS = {{ this.timeout_ms }}, BUDGET_MS = {{ this.budget_ms }};
             var WB_ATTR = {{ this.wb_attr|tojson }};
             var LIVE_ATTR = tiles.getAttribution(), currentUrl = LIVE_URL, currentAttr = LIVE_ATTR;
+            map.roofImageryUrl = LIVE_URL;  // the current imagery template, read by core/superres
 
             function store(name) {  // a Map on window.parent; null when it is unreachable
                 try {
@@ -103,7 +104,11 @@ class WaybackScript(MacroElement):
             function apply(choice) {  // an option of the list; "live" (or null) is the original layer
                 var wb = !!(choice && choice.release !== "live" && choice.url);
                 var url = wb ? choice.url : LIVE_URL, attr = wb ? WB_ATTR.replace("{date}", choice.date) : LIVE_ATTR;
-                if (url !== currentUrl) { tiles.setUrl(url); currentUrl = url; }
+                if (url !== currentUrl) {
+                    tiles.setUrl(url);
+                    currentUrl = map.roofImageryUrl = url;
+                    map.fire("roofimagerychange", {url: url});
+                }
                 if (attr !== currentAttr) {
                     tiles.options.attribution = attr;
                     if (map.attributionControl) {
