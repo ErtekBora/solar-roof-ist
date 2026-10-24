@@ -9,7 +9,7 @@ import streamlit as st
 from folium.plugins import Draw
 from streamlit_folium import st_folium
 
-from core import buildings, building_mode, cost, drawings, explain, imagery_fx, layout, report
+from core import buildings, building_mode, cost, drawings, explain, layout, report, wayback
 from core.config import (
     BUILDING_ZOOM,
     BUILDINGS_BBOX,
@@ -1093,24 +1093,22 @@ TILE_SEAM_CSS = "<style>.roof-esri .leaflet-tile { width: 257px !important; heig
 KEY_ROOF_BOUNDS = "_roof_view_bounds"  # {"building": id, "bounds": [[s, w], [n, e]]}: the fixed roof-map view
 ROOF_FIT_MARGIN = 0.15  # share of the footprint bbox span added on every side
 ROOF_MAX_ZOOM = 22
-ROOF_MAX_FIT_ZOOM = 21.0  # the fitted view stops here: a larger roof; the enhancement renders up to 4x native
+ROOF_MAX_FIT_ZOOM = 19.5  # the fitted view stops here: Esri has real imagery up to z19 in Istanbul, so close to 1:1
 ESRI_NATIVE_ZOOM = 19  # deepest Esri level used; above it tiles are upscaled instead of disappearing
 ROOF_MAP_HEIGHT = 620
 ROOF_TILE_CLASS = "roof-esri"
 FIT_VIEW_LABEL = "Görünümü çerçeveye ortala"
-# display-only imagery enhancement (browser-side canvas processing); the plain key keeps the choice while the map is hidden
-KEY_FX_ON, KEY_FX_ON_KEEP = "roof_fx_on", "_roof_fx_on_keep"
 
 
-def build_roof_map(center, draw_tools=True, aligning=False, bounds=None, enhance=False):
+def build_roof_map(center, draw_tools=True, aligning=False, bounds=None, wayback_key=None):
     """Static part of the roof map: Esri World Imagery (DISPLAY ONLY, attribution kept) and the Draw control
     (rectangle and polygon only; editing off, deleting on). `draw_tools=False` (click-to-align mode) omits the
     toolbar so an alignment click can never add a vertex; `aligning` also shows a crosshair.
 
     The view is static: no dragging, zooming or zoom buttons. With `bounds` ([[s, w], [n, e]]) Leaflet fits the map
-    to them on every build (zoomSnap 0.1, so the same fractional zoom each time). `enhance` adds the browser-side
-    canvas enhancement overlay (core/imagery_fx); False adds nothing. The tile layer loads with crossOrigin
-    "anonymous" so the script's canvas is never tainted."""
+    to them on every build (zoomSnap 0.1, so the same fractional zoom each time). With `wayback_key` (the building
+    key) the browser-side imagery date selector (core/wayback) is added for the building at `center`. The tile layer
+    loads with crossOrigin "anonymous"."""
     m = folium.Map(
         location=center, zoom_start=ROOF_VIEW_ZOOM, max_zoom=ROOF_MAX_ZOOM, tiles=None, zoom_control=False,
         scroll_wheel_zoom=False, dragging=False, double_click_zoom=False, touch_zoom=False, box_zoom=False,
@@ -1125,10 +1123,10 @@ def build_roof_map(center, draw_tools=True, aligning=False, bounds=None, enhance
         max_native_zoom=ESRI_NATIVE_ZOOM, max_zoom=ROOF_MAX_ZOOM, class_name=ROOF_TILE_CLASS,
         cross_origin="anonymous",
     ).add_to(m)
+    if wayback_key is not None:  # right after the layer: a stored date is applied before the fitted tiles load
+        wayback.add_to_map(m, tiles, wayback_key, center, ESRI_TILES_URL)
     if bounds is not None:
         m.fit_bounds(bounds, max_zoom=ROOF_MAX_FIT_ZOOM, padding=(10, 10))
-    if enhance:  # after fit_bounds: the script must run once the fitted view exists
-        imagery_fx.add_to_map(m, tiles)
     if draw_tools:
         Draw(
             export=False, position="topleft", show_geometry_on_click=False,
@@ -1275,7 +1273,7 @@ def roof_fit_bounds(footprint, offset=(0.0, 0.0)):
 
 def roof_view_bounds(state, building, footprint):
     """The fixed roof-map view of this building: set once from the footprint; only 'Görünümü çerçeveye ortala'
-    changes it (offset, drawings and enhancement never do)."""
+    changes it (offset, drawings and the imagery date never do)."""
     stored = state.get(KEY_ROOF_BOUNDS)
     if stored is None or stored["building"] != building_key(building):
         stored = state[KEY_ROOF_BOUNDS] = {"building": building_key(building), "bounds": roof_fit_bounds(footprint)}
@@ -1289,22 +1287,6 @@ def _fit_view_to_frame(building_id, footprint_wkb):
     st.session_state[KEY_ROOF_BOUNDS] = {"building": building_id, "bounds": bounds}
     drawings.rebuild(draw)
     _keep_alignment_open()
-
-
-def _fx_changed():
-    """Enhancement switched on/off: keep the choice and rebuild the map (drawings and view stay)."""
-    state = st.session_state
-    state[KEY_FX_ON_KEEP] = state.get(KEY_FX_ON)
-    drawings.rebuild(state[KEY_DRAWINGS])
-
-
-def enhancement_control(state):
-    """'Görüntü iyileştirme' toggle above the roof map (default on; off shows the original). Returns True when on."""
-    if KEY_FX_ON not in state:  # hidden widgets lose their state: restore it first
-        state[KEY_FX_ON] = state.get(KEY_FX_ON_KEEP, True) is not False
-    on = st.toggle("Görüntü iyileştirme", key=KEY_FX_ON, on_change=_fx_changed)
-    st.caption(imagery_fx.CAPTION)
-    return on
 
 
 def alignment_control(draw, building=None):
@@ -1375,10 +1357,10 @@ def roof_view_section(state, building, roof=None, result=None):
         st.caption(ALIGN_CLICK_CAPTION)
         st.button(ALIGN_CANCEL_LABEL, key="align_cancel", on_click=_cancel_align)
     bounds = roof_view_bounds(state, building, footprint)
-    enhance = enhancement_control(state)
     data = st_folium(
         build_roof_map(
-            list(building["centroid"]), draw_tools=not aligning, aligning=aligning, bounds=bounds, enhance=enhance,
+            list(building["centroid"]), draw_tools=not aligning, aligning=aligning, bounds=bounds,
+            wayback_key=building_key(building),
         ),
         key=drawings.map_key(draw),
         returned_objects=["all_drawings", "last_clicked"] if aligning else ["all_drawings"],
@@ -1397,6 +1379,7 @@ def roof_view_section(state, building, roof=None, result=None):
     notice, draw["notice"] = draw.get("notice"), None
     if notice:
         st.warning(notice)
+    st.caption(wayback.CAPTION)
     st.caption(TRASH_NOTE)
     st.caption(ROOF_VIEW_CAPTION)
 

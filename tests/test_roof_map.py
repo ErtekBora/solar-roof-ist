@@ -1,4 +1,4 @@
-"""Roof map: static building-fitted view, enhancement control, alignment expander, drawings across rebuilds."""
+"""Roof map: static building-fitted view, imagery date selector, alignment expander, drawings across rebuilds."""
 import re
 
 import pytest
@@ -6,7 +6,7 @@ import shapely
 from streamlit_folium import _get_html, _get_map_string
 
 import app
-from core import drawings, explain, imagery_fx
+from core import drawings, explain, wayback
 from test_app import (  # noqa: F401  (fixtures and helpers shared with the app tests)
     _button, _centre_obstacle, _feature, _roof_draw, _roof_inputs, _run_with_point, _widget, building_point, map_calls,
     mocked, roof_figs, sample_index,
@@ -43,22 +43,23 @@ def _draw_one(at, box, sample_index, building_point):
 
 def test_rendered_roof_map_is_a_static_fitted_view():
     js = _script(app.build_roof_map([40.97, 29.07], bounds=BOUNDS))
-    assert '.fitBounds( [[40.969, 29.069], [40.971, 29.071]], {"maxZoom": 21.0, "padding": [10, 10]} );' in js
+    assert '.fitBounds( [[40.969, 29.069], [40.971, 29.071]], {"maxZoom": 19.5, "padding": [10, 10]} );' in js
     assert '"zoomSnap": 0.1' in js and '"zoomDelta": 0.1' in js and '"maxZoom": 22, } } );' in js
     for option in ("dragging", "scrollWheelZoom", "doubleClickZoom", "touchZoom", "boxZoom", "keyboard", "zoomControl"):
         assert f'"{option}": false' in js, option
     tile = re.search(r"L\.tileLayer\(.*?\);", js).group()
     assert '"className": "roof-esri"' in tile and '"maxNativeZoom": 19' in tile and '"maxZoom": 22' in tile
-    assert '"crossOrigin": "anonymous"' in tile  # cached tiles stay CORS-valid for the enhancement canvas
+    assert '"crossOrigin": "anonymous"' in tile
     assert "Tiles \\u00a9 Esri" in tile  # the Esri attribution is unchanged
 
 
-def test_fitted_zoom_is_capped_at_21_while_map_and_tiles_allow_22():
+def test_fitted_zoom_is_capped_at_19_5_while_map_and_tiles_allow_22():
     import json
 
     js = _script(app.build_roof_map([40.97, 29.07], bounds=BOUNDS))
     options = json.loads(re.search(r"\.fitBounds\( \[\[.*?\]\], (\{.*?\}) \);", js).group(1))
-    assert options["maxZoom"] == 21 and app.ROOF_MAX_FIT_ZOOM == 21.0
+    assert options["maxZoom"] == 19.5 and app.ROOF_MAX_FIT_ZOOM == 19.5
+    assert app.ESRI_NATIVE_ZOOM == 19
     assert '"maxZoom": 22, } } );' in js  # map option
     assert '"maxZoom": 22' in re.search(r"L\.tileLayer\(.*?\);", js).group()  # tile layer
 
@@ -68,28 +69,29 @@ def test_the_draw_toolbar_still_exists_on_the_static_map():
     assert "L.Control.Draw" in js and '"remove": true' in js
 
 
-def test_canvas_script_runs_after_fit_bounds_inside_when_ready_and_hides_the_esri_layer():
-    m = app.build_roof_map([40.97, 29.07], bounds=BOUNDS, enhance=True)
-    js = _script(m)
-    assert 0 <= js.index(".fitBounds(") < js.index("function roofEnhance()")
-    assert js.index("function roofEnhance()") < js.index("map.whenReady(schedule);")  # after the fit has settled
+def test_the_roof_map_gets_no_canvas_enhancement_script():
+    for key in (None, "b1"):
+        m = app.build_roof_map([40.97, 29.07], bounds=BOUNDS, wayback_key=key)
+        js = _script(m)
+        assert "roofEnhance" not in js and "imageOverlay" not in js and "getImageData" not in js
+        assert "__roofFxCache" not in js and "<filter" not in _get_html(m)
+    assert not hasattr(app, "enhancement_control") and not hasattr(app, "KEY_FX_ON")
+
+
+def test_wayback_script_is_added_right_after_the_tile_layer_and_before_fit_bounds():
+    js = _script(app.build_roof_map([40.97, 29.07], bounds=BOUNDS, wayback_key="b1"))
     tile_name = re.search(r"var (tile_layer_\w+) = L\.tileLayer\(", js).group(1)
-    assert f"var tiles = {tile_name};" in js
-    html = _get_html(m)
-    assert "<filter" not in html and "filter: url" not in html  # the SVG filter is gone
-
-
-def test_enhancement_off_adds_no_canvas_script_to_the_map():
-    m = app.build_roof_map([40.97, 29.07], bounds=BOUNDS, enhance=False)
-    js = _script(m)
-    assert "roofEnhance" not in js and "imageOverlay" not in js and "getImageData" not in js
-    assert '"crossOrigin": "anonymous"' in js  # the plain tile layer is unchanged otherwise
+    assert f"tiles = {tile_name}" in js and 'var KEY = "b1"' in js and "L.latLng([40.97, 29.07])" in js
+    assert js.index("L.tileLayer(") < js.index("function parseReleases") < js.index(".fitBounds(")
+    assert "Esri World Imagery Wayback" in js and "waybackconfig.json" in js
+    assert "waybackconfig.json" not in _script(app.build_roof_map([40.97, 29.07], bounds=BOUNDS))  # only with a key
 
 
 def test_the_first_map_gets_no_filter_and_stays_navigable():
     m = app.build_map()
     html = m.get_root().render()
     assert "roof-esri" not in html and "<filter" not in html and "fitBounds" not in html
+    assert "waybackconfig" not in html and "roofEnhance" not in html
 
 
 # --------------------------------------------------------------- fitted bounds
@@ -120,30 +122,22 @@ def test_rebuild_bumps_the_generation_and_keeps_every_shape():
 
 # --------------------------------------------------------------- AppTest flows
 
-def _fx_toggle(at):
-    return next(t for t in at.toggle if t.label == "Görüntü iyileştirme")
-
-
-def _has_filter(fig):
+def _script_of(fig):
     fig.render()
-    return "function roofEnhance()" in _get_map_string(fig)
+    return _get_map_string(fig)
 
 
-def test_enhancement_toggle_and_offset_changes_keep_drawings_and_the_fitted_view(mocked, roof_figs, sample_index, building_point):
+def test_no_enhancement_toggle_the_date_caption_and_offset_changes_keep_drawings_and_the_view(mocked, roof_figs, sample_index, building_point):
     calls, box, figs = roof_figs
     at = _run_with_point(building_point)
-    assert _fx_toggle(at).value is True and _has_filter(figs[-1][0])  # on by default
-    assert imagery_fx.CAPTION in [c.value for c in at.caption]
-    assert not [r for r in at.radio if r.label == "Görüntü iyileştirme"] and not [x for x in at.slider if x.label == "Şiddet"]
+    assert not [t for t in at.toggle if t.label == "Görüntü iyileştirme"]
+    captions = [c.value for c in at.caption]
+    assert wayback.CAPTION in captions and not any("İyileştirme yalnızca" in c for c in captions)
+    js = _script_of(figs[-1][0])
+    assert "waybackconfig.json" in js and "function roofEnhance()" not in js
     _draw_one(at, box, sample_index, building_point)
     stored, bounds = _obstacles(at), _bounds(at)
-    for change in (
-        lambda: _fx_toggle(at).set_value(False).run(),
-        lambda: _button(at, "5 m →").click().run(),
-        lambda: _fx_toggle(at).set_value(True).run(),
-        lambda: _button(at, "Sıfırla").click().run(),
-        lambda: _fx_toggle(at).set_value(False).run(),
-    ):
+    for change in (lambda: _button(at, "5 m →").click().run(), lambda: _button(at, "Sıfırla").click().run()):
         gen = _roof_draw(at)["gen"]
         change()
         assert not at.exception
@@ -151,7 +145,7 @@ def test_enhancement_toggle_and_offset_changes_keep_drawings_and_the_fitted_view
         assert _roof_draw(at)["gen"] > gen  # a fresh map generation: never read as a deletion
     fig, kwargs = figs[-1]
     assert "center" not in kwargs and "zoom" not in kwargs
-    assert at.session_state[app.KEY_FX_ON] is False and not _has_filter(fig)  # off: the original image, no filter
+    assert "waybackconfig.json" in _script_of(fig)  # every rebuild carries the selector again
 
 
 def test_fit_view_button_refits_to_the_shifted_frame_once(mocked, roof_figs, sample_index, building_point):
@@ -207,9 +201,9 @@ def test_flat_roof_notes_read_as_sentences():
 
 # ------------------------------------------------------ tile seam + Sıfırla restores the view
 
-def test_tile_seam_css_is_on_the_roof_tiles_only_whether_or_not_the_filter_is_on():
-    for enhance in (True, False):
-        m = app.build_roof_map([40.97, 29.07], bounds=BOUNDS, enhance=enhance)
+def test_tile_seam_css_is_on_the_roof_tiles_only():
+    for key in (None, "b1"):
+        m = app.build_roof_map([40.97, 29.07], bounds=BOUNDS, wayback_key=key)
         m.render()
         assert ".roof-esri .leaflet-tile { width: 257px !important; height: 257px !important; }" in _get_html(m)
     assert "257px" not in app.build_map().get_root().render()  # the first map is untouched
