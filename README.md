@@ -10,7 +10,7 @@
 > EPDK tariff). AI is used in two supporting roles: a LightGBM model that estimates missing building heights, and a Gemini
 > text explainer that is never allowed to introduce a number. Built only from open data. Details below (in Turkish).
 
-![Çatı görünümü: seçilen bina, hesaplanan panel yerleşimi ve kullanıcının çizdiği engel](docs/roof_view.png)
+![Çatı görünümü: seçilen bina, hesaplanan panel yerleşimi ve kullanıcının çizdiği engel](docs/roof_view_final.png)
 
 *Çatı görünümü: seçilen binanın izi (beyaz), kenar boşluğu (kesikli çizgi), kullanıcının çizdiği engel (kırmızı) ve hesaplanan panel yerleşimi (mavi).*
 
