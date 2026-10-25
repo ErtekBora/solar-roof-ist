@@ -75,8 +75,9 @@ her zaman listelenir. Komşu bina gölgesi henüz hesaba katılmadığı için "
 
 ## 4. Yapay zekâ nerede, neden orada?
 
-Karar verdiren sayıları (kWp, TL, geri ödeme) bir dil modelinin üretmesi uydurma riski taşır. Bu yüzden **hesap çekirdeği
-deterministiktir ve birim testlerle doğrulanır**; yapay zekâ iki yerde destek rolündedir:
+Karar verdiren sayıları (kWp, TL, geri ödeme) bir dil modelinin üretmesi uydurma riski taşır. Bu yüzden **hesap çekirdeği deterministiktir ve birim testlerle doğrulanır**; yapay zekâ bu çekirdeğin etrafında, her zaman denetlenebilir bir destek rolündedir. Tasarım ilkemiz: **YZ öneri getirir, geometri ve fizik hesaplar, kullanıcı onaylar.**
+
+### Bugün uygulamada çalışan YZ bileşenleri
 
 | Bileşen | Ne yapar | Sınırı |
 |---|---|---|
@@ -84,6 +85,18 @@ deterministiktir ve birim testlerle doğrulanır**; yapay zekâ iki yerde destek
 | **Gemini metin açıklayıcı** | Hesaplanmış sonuç JSON'unu 3 gerekçe ve öneri ile Türkçe açıklar. | Metindeki her sayı sonuçta bulunmak zorundadır (sayı doğrulayıcı); olmayan alan adları ve gelecek özellik vaatleri filtrelenir; başarısız olursa şablon metne düşer. Hiçbir sayı üretmez, panel yerleştirmez. |
 
 Uydu görüntüsü **hiçbir modele gönderilmez, işlenmez ve saklanmaz**; yalnızca ekranda gösterilir.
+
+### Yol haritası: YZ'yi çekirdeğe yaklaştırmak (planlanan, henüz uygulamada yok)
+
+Bugünkü sürümde engelleri kullanıcı çizer, çünkü Esri görüntüsünün çözünürlüğü (yaklaşık 0,23 m/piksel) ve lisansı bir modelle otomatik tespit için uygun değildir. Daha yüksek çözünürlüklü ve kurumsal lisanslı görüntüyle (İBB / TKGM ortofoto, 10–30 cm) aşağıdaki aşamalar mümkün hale gelir:
+
+1. **Görüntüden otomatik engel tespiti (öneri + onay).** Bir görüntü bölütleme/nesne algılama modeli bacaları, klimaları, çatı çıkışlarını ve teras alanlarını önerir; kullanıcı haritada tek tıkla onaylar ya da düzeltir. Panel yerleşimi yine deterministik kalır, model yalnızca "nerede engel var" sorusuna yardım eder.
+2. **Çatı tipi sınıflandırması.** Düz, kırma ve beşik çatıyı görüntüden tahmin ederek bugün kullanıcıya sorduğumuz "Çatı yapısı" bilgisini otomatik doldurmak ve "Bilmiyorum" durumundaki geniş aralığı daraltmak.
+3. **Ufuk çizgisi ve komşu bina gölgesi.** Yükseklik tahminiyle (LightGBM) birleşen bina yükseklikleri üzerinden her çatı için ufuk profili çıkarıp gölge kaybını saatlik hesaplamak. Güneş geometrisi fizikle hesaplanır, YZ yalnızca eksik yükseklik verisini tamamlar. Bu aşama güven seviyesini "Yüksek"e çıkarabilen adımdır.
+4. **Görüntü hizalama (perspektif düzeltme).** Yüksek binalarda uydu görüntüsündeki kaymayı bina yüksekliği ve çekim açısıyla otomatik düzeltmek; bugünkü elle "Çerçeveyi çatıya hizala" adımının yerini alacak.
+5. **Daha iyi tahminler.** Daire sayısı ve tüketim için veriyle eğitilmiş modeller; bugünkü "kat sayısı × taban alanı ÷ 120 m²" formülünün yerine geçecek ve arayüzde yine "YZ tahmini" olarak etiketlenecek.
+
+Her aşamada kural değişmez: **sayıları hesap üretir, YZ yalnızca girdi önerir veya eksik veriyi tamamlar, sonuç açıklanabilir ve kullanıcı tarafından düzeltilebilir kalır.**
 
 ## 5. Karşılaştığımız engeller ve çözümlerimiz
 
