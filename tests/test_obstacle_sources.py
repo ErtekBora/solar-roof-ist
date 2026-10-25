@@ -86,7 +86,7 @@ def test_obstacle_and_panel_rows_follow_the_active_source(mocked, sample_index, 
     }
     photo, _, _ = app.evaluate(analysis, inputs, detection, {0}, None)
     rows = _rows(photo, inputs)
-    assert photo["guc_kaynagi"] == "fotograf" and rows["Engeller"][1] == "fotoğraf analizi, %50,0"
+    assert photo["guc_kaynagi"] == "fotograf" and "fotoğraf" not in rows["Engeller"][1]  # the photo row was removed
     assert rows["Panel"][1].startswith("≈")
     md = report.report_markdown(photo, [])
     assert "- Panel: ≈" in md and "orandan tahmini" in md
@@ -97,10 +97,10 @@ def _offset_caption(at):
     return [c.value for c in at.caption if c.value.startswith("Kaydırma:")]
 
 
-def test_drawing_source_has_a_collapsed_expander_with_a_constant_label(mocked, building_point):
+def test_drawing_source_has_an_open_expander_with_a_constant_label(mocked, building_point):
     at = _run_with_point(building_point)
     [exp] = [e for e in at.expander if e.label == "Çerçeveyi çatıya hizala (yüksek binalarda gerekir)"]
-    assert exp.proto.expanded is False
+    assert exp.proto.expanded is True  # open by default
     inside = [b.label for b in exp.button]
     assert "Çatıya tıklayarak hizala" in inside and "↑" in inside and "5 m →" in inside and "Sıfırla" in inside
     assert app.ALIGN_CAPTION in [c.value for c in exp.caption] and app.ALIGN_APPROX_CAPTION in [c.value for c in exp.caption]

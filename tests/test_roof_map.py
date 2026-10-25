@@ -201,7 +201,7 @@ def test_fit_view_button_refits_to_the_shifted_frame_once(mocked, roof_figs, sam
 def test_alignment_expander_stays_open_across_alignment_clicks(mocked, building_point):
     at = _run_with_point(building_point)
     expander = lambda: next(e for e in at.expander if e.label == app.ALIGN_EXPANDER_LABEL)
-    assert expander().proto.expanded is False  # collapsed until the user aligns
+    assert expander().proto.expanded is True  # open by default
     for label in ("→", "5 m ↑", "Sıfırla", "←"):
         _button(at, label).click().run()
         assert not at.exception and expander().proto.expanded is True, label

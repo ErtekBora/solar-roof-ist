@@ -667,9 +667,9 @@ def structure_text(r):
 
 
 def assumption_rows(r, inputs, detection, explanation=None, report=None):
-    """'Varsayımlar ve kaynaklar' table: one row per shown number (SPEC section 8)."""
+    """'Varsayımlar ve kaynaklar' table: one row per shown number (SPEC section 8). `detection` is unused (photo
+    analysis was removed); the parameter stays for existing callers."""
     building = inputs.get("building")
-    applied = detection is not None and inputs.get("photo_applies", True)
     setback_area = r["kenar_sonrasi_alan_m2"] if r.get("kenar_sonrasi_alan_m2") is not None else r["toplam_cati_alani_m2"]
     if building is not None:
         rows = [
@@ -684,7 +684,7 @@ def assumption_rows(r, inputs, detection, explanation=None, report=None):
         if r["daire_sayisi_tahmini"] else "Girdiğiniz değer"
     )
     rows += [
-        ("Daire sayısı", f"{r['daire_sayisi']}", "Varsayım" if r["daire_sayisi_tahmini"] else "Kullanıcı girdisi", flats_note),
+        ("Daire sayısı", f"{r['daire_sayisi']}", "Hesaplanan tahmin" if r["daire_sayisi_tahmini"] else "Kullanıcı girdisi", flats_note),
         ("Çatı yapısı", structure_text(r), inputs["roof_tag"], "Kullanıcı seçimi veya 'Bilmiyorum' (iki uç durum hesaplanır)"),
     ]
     if r["cati_yapisi"] != "flat":
@@ -705,24 +705,11 @@ def assumption_rows(r, inputs, detection, explanation=None, report=None):
         ))
     elif r["guc_kaynagi"] == "engel_yok":
         rows.append(("Engeller", "yok", "Kullanıcı girdisi", "Kullanıcı çatının boş olduğunu onayladı (engel oranı 0)"))
-    elif r["guc_kaynagi"] == "fotograf":
-        rows.append((
-            "Engeller", f"fotoğraf analizi, %{tr_num(percent_from_ratio(r['engel_orani']), 1)}", "Ölçüm/veri",
-            "Kendi çatı fotoğrafınızdan YZ ile; kullanılabilir alan = alan × (1 − engel oranı)",
-        ))
     else:
         rows.append(("Engeller", "ortalama oran", "Varsayım", "Çizim yok: ortalama kullanılabilir alan oranı"))
     if layout_mode:
         rows.append(("Kullanılabilir alan oranı", NOT_USED_LAYOUT, "Kullanıcı girdisi", "Kurulabilir güç panel yerleşiminden gelir"))
-    if applied:
-        view = "Kuşbakışı" if detection["image_view"] == "top-down" else "Açılı"
-        rows += [
-            ("Engel oranı", f"%{tr_num(percent_from_ratio(r['engel_orani']), 1)}", "Ölçüm/veri", "Gemini fotoğraf analizi; tabloda işaretlediğiniz engeller"),
-            ("Görüntü türü", view, "Ölçüm/veri", "Gemini fotoğraf analizi"),
-        ]
-        if building is None:
-            rows.append(("Kenar payı çarpanı", f"{EDGE_FACTOR}", "Varsayım", "Çatı kenarlarında panel konmayan şerit"))
-    elif layout_mode:
+    if layout_mode:
         pass  # the unused-ratio row is added above
     elif building is None:
         rows.append(("Kullanılabilir alan oranı", f"{USABLE_RATIO_NO_PHOTO}", "Varsayım", "Ember ortalaması (çizim yok)"))
@@ -789,8 +776,6 @@ def assumption_rows(r, inputs, detection, explanation=None, report=None):
         else:
             note = "YZ yanıtı kullanılamadı; sonuçlardan üretilen sabit metin"
             rows.append(("YZ açıklaması", "Standart şablon", "Şablon", note))
-    if inputs.get("demo_photo"):
-        rows.append(("Demo fotoğrafı", "—", "Varsayım", "Demo fotoğrafı örnektir; seçilen binanın kendi çatısı değildir."))
     return pd.DataFrame(rows, columns=["Değer", "Sonuç", "Durum", "Kaynak / not"])
 
 
@@ -1346,7 +1331,7 @@ def roof_view_section(state, building, roof=None, result=None):
         st.caption(ROOF_VIEW_PRE_CAPTION)
     if tuple(draw["offset"]) != (0.0, 0.0):
         st.caption(drawings.offset_text(draw["offset"]))  # outside the expander: its label never changes
-    with st.expander(ALIGN_EXPANDER_LABEL, expanded=state.get(KEY_ALIGN_EXPANDED) == building_key(building)):
+    with st.expander(ALIGN_EXPANDER_LABEL, expanded=True):  # always open: alignment is needed on tall buildings
         alignment_control(draw, building)
     for note in (roof["notes"] if roof is not None else []):
         if note not in (NOTE_AVERAGE, NOTE_PHOTO):  # RATIO_NO_PANELS_CAPTION below replaces them
@@ -1387,7 +1372,7 @@ def roof_view_section(state, building, roof=None, result=None):
 
 def breakdown_section(result, offset=None):
     """'Hesap dökümü' and the PVGIS verification links (all from the result dict, no LLM)."""
-    with st.expander("Hesap dökümü"):
+    with st.expander("Hesap dökümü", expanded=True):
         st.dataframe(pd.DataFrame(report.breakdown_rows(result, offset)), hide_index=True, width="stretch")
         st.markdown("**PVGIS'te kendiniz doğrulayın**")
         st.caption(report.PVGIS_CAPTION)
@@ -1519,9 +1504,9 @@ def main():
         show_monthly(result)
         offset = draw.get("offset") if roof is not None else None
         breakdown_section(result, offset)
-        st.subheader("Varsayımlar ve kaynaklar")
         assumptions = assumption_rows(result, inputs, None, state.get("explanation"), index.report if index else None)
-        st.dataframe(assumptions, hide_index=True, width="stretch")
+        with st.expander("Varsayımlar ve kaynaklar", expanded=False):
+            st.dataframe(assumptions, hide_index=True, width="stretch")
         download_section(result, assumptions.itertuples(index=False, name=None), offset)
 
 

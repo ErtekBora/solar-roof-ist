@@ -540,20 +540,52 @@ def test_collect_inputs_clamps_flats_cleans_bill_and_marks_edits():
     assert override["structure"] == "mixed" and override["flat_share_pct"] == 70
 
 
-def test_assumption_rows_tags_and_demo_row():
-    solar_result = _bundle()
-    inputs = dict(_inputs(), demo_photo=True)
-    det = _square_detection()
-    r, _ = app.recompute(solar_result, inputs, det, {0})
-    df = app.assumption_rows(r, inputs, det)
-    assert set(df["Durum"]) <= {"Ölçüm/veri", "Kullanıcı girdisi", "Varsayım", "Sonraki aşamada", "YZ tahmini"}
+ALLOWED_STATUSES = {
+    "Ölçüm/veri", "Kullanıcı girdisi", "Varsayım", "Hesaplanan tahmin", "Sonraki aşamada", "YZ tahmini",
+    "YZ yorumu (sayılar doğrulandı)", "Şablon",
+}
+
+
+def test_assumption_rows_tags_and_no_photo_rows():
+    r, _ = app.recompute(_bundle(), _inputs(), None, set())
+    df = app.assumption_rows(r, _inputs(), None)
+    assert set(df["Durum"]) <= ALLOWED_STATUSES
     assert "Sonraki aşamada" in set(df["Durum"])
-    assert any("Demo fotoğrafı örnektir; seçilen binanın kendi çatısı değildir." in n for n in df["Kaynak / not"])
     assert {"Elektrik tarifesi", "Tasarruf aralığı", "Paylaşım", "Daire sayısı", "Kurulum maliyeti", "Geri ödeme"} <= set(df["Değer"])
     assert df.set_index("Değer").loc["Daire sayısı", "Durum"] == "Kullanıcı girdisi"
     assert any(config.TARIFF_SOURCE in n for n in df["Kaynak / not"])
-    r2, _ = app.recompute(solar_result, _inputs(), None, set())
-    assert not any("Demo fotoğrafı" in n for n in app.assumption_rows(r2, _inputs(), None)["Kaynak / not"])
+    for gone in ("Engel oranı", "Görüntü türü", "Kenar payı çarpanı", "Demo fotoğrafı"):
+        assert gone not in set(df["Değer"]), gone
+    assert not any("fotoğraf" in n.lower() for n in df["Kaynak / not"])
+    # a detection passed by an old caller adds nothing: the photo rows are gone
+    inputs = dict(_inputs(), demo_photo=True)
+    det = _square_detection()
+    r_det, _ = app.recompute(_bundle(), inputs, det, {0})
+    df_det = app.assumption_rows(r_det, inputs, det)
+    assert set(df_det["Durum"]) <= ALLOWED_STATUSES
+    assert not {"Engel oranı", "Görüntü türü", "Kenar payı çarpanı", "Demo fotoğrafı"} & set(df_det["Değer"])
+    assert not any("Demo fotoğrafı" in n or "Gemini fotoğraf" in n for n in df_det["Kaynak / not"])
+
+
+def test_flat_count_status_estimate_vs_entered_and_yz_tahmini_only_on_the_ml_height(sample_index, building_point):
+    estimated = {**_inputs(), "n_flats_estimated": True}
+    r_est, _ = app.recompute(_bundle(), estimated, None, set())
+    assert app.assumption_rows(r_est, estimated, None).set_index("Değer").loc["Daire sayısı", "Durum"] == "Hesaplanan tahmin"
+    r_ent, _ = app.recompute(_bundle(), _inputs(), None, set())
+    assert app.assumption_rows(r_ent, _inputs(), None).set_index("Değer").loc["Daire sayısı", "Durum"] == "Kullanıcı girdisi"
+    building = {**buildings.find_building(sample_index, *building_point)["building"], "height_source": "ml_estimate"}
+    inputs = {**estimated, "building": building, "usable_base_area_m2": building["setback_area_m2"],
+              "area": building["area_m2"]}
+    r, _ = app.recompute(_bundle(), inputs, None, set())
+    df = app.assumption_rows(r, inputs, None, {"source": "gemini"}, report=sample_index.report)
+    assert set(df["Durum"]) <= ALLOWED_STATUSES
+    yz = df[df["Durum"] == "YZ tahmini"]
+    assert list(yz["Değer"]) == ["Bina yüksekliği"] and app.HEIGHT_SOURCE_TAG["ml_estimate"] == "YZ tahmini"
+    by = df.set_index("Değer")
+    assert by.loc["Daire sayısı", "Durum"] == "Hesaplanan tahmin"
+    assert by.loc["YZ açıklaması", "Durum"] == "YZ yorumu (sayılar doğrulandı)"  # unchanged
+    for fixed in ("Kenar boşluğu", "Panel", "Kurulum maliyeti", "Elektrik tarifesi", "CO₂ faktörü", "Güven seviyesi"):
+        assert by.loc[fixed, "Durum"] == "Varsayım", fixed
 
 
 def test_assumption_rows_for_a_building_include_setback_height_and_ml_note(sample_index, building_point):
@@ -1130,6 +1162,33 @@ def test_trust_features_render(mocked, building_point):
     assert any(c.value == report.PVGIS_CAPTION for c in at.caption)
     assert any(c.value.startswith(app.ROOF_VIEW_CAPTION) and "Esri" in c.value for c in at.caption)
     assert at.get("download_button")
+
+
+class _StateView:
+    """dict-like .get() over AppTest's session state (collect_inputs reads the state with .get)."""
+
+    def __init__(self, ss):
+        self.ss = ss
+
+    def get(self, key, default=None):
+        return self.ss[key] if key in self.ss else default
+
+
+def test_breakdown_open_and_assumptions_collapsed_with_the_full_table(mocked, building_point):
+    at = _after_hesapla(building_point)
+    expanders = {e.label: e for e in at.expander}
+    assert expanders["Hesap dökümü"].proto.expanded is True
+    assert expanders[app.ALIGN_EXPANDER_LABEL].proto.expanded is True
+    assumptions = expanders["Varsayımlar ve kaynaklar"]
+    assert assumptions.proto.expanded is False
+    assert "Varsayımlar ve kaynaklar" not in [s.value for s in at.subheader]  # the expander replaces the subheader
+    [table] = assumptions.dataframe
+    inputs = app.collect_inputs(_StateView(at.session_state), at.session_state["analysis"])
+    expected = app.assumption_rows(
+        at.session_state["result"], inputs, None, at.session_state["explanation"], app.get_building_index().report,
+    )
+    assert table.value.reset_index(drop=True).equals(expected.reset_index(drop=True))
+    assert at.get("download_button")  # outside the expander, unchanged
 
 
 def test_small_fixes_help_list_bill_minimum_and_high_share_note(mocked, monkeypatch, building_point):
